@@ -55,6 +55,16 @@ class FleetSession:
     def is_alive(self) -> bool:
         if not self.pid:
             return False
+        # Check if Unix domain socket is active and accepting connections
+        if self.socket_path and os.path.exists(self.socket_path):
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(0.3)
+                s.connect(self.socket_path)
+                s.close()
+                return True
+            except Exception:
+                pass
         try:
             p = psutil.Process(self.pid)
             return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
@@ -69,6 +79,9 @@ class FleetSession:
                 self.status = "COMPLETED"
                 if not self.end_time:
                     self.end_time = datetime.now(timezone.utc).isoformat()
+        elif self.status == "COMPLETED" and self.is_alive():
+            self.status = "RUNNING"
+            self.end_time = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
