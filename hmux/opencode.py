@@ -450,7 +450,8 @@ class OpenCodeDriver:
                 cwd=session.worktree_path,
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
+                stdin=subprocess.DEVNULL,
             )
             # Append output to session logs
             if session.log_file:

@@ -191,7 +191,7 @@ def handle_call_tool(params: Dict[str, Any]) -> Dict[str, Any]:
     default_from = caller_id or "opencode"
 
     if tool_name == "list_active_harnesses":
-        sessions = router.list_active_sessions()
+        sessions = router.list_active_sessions(include_opencode=True)
         text = json.dumps(sessions, indent=2)
         return {"content": [{"type": "text", "text": text}]}
 

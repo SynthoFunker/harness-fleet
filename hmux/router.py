@@ -92,8 +92,14 @@ class MessageRouter:
         except Exception:
             return False
 
-    def list_active_sessions(self) -> List[Dict[str, Any]]:
-        """List all sessions that can receive messages right now."""
+    def list_active_sessions(self, include_opencode: bool = False) -> List[Dict[str, Any]]:
+        """
+        List all sessions that can receive messages right now.
+
+        ``include_opencode`` merges live OpenCode sessions discovered in
+        opencode.db. It is opt-in so broadcasts never start unsolicited model
+        turns in every live OpenCode TUI.
+        """
         sessions = self.state_mgr.list_all(refresh=True)
         active = []
         seen_ids = set()
@@ -115,26 +121,25 @@ class MessageRouter:
                 if native_id:
                     seen_native_ids.add(native_id)
 
-        # OpenCode sessions are addressable through opencode.db even when they
-        # were not spawned by HMUX. Include the ones that are actively working.
-        try:
-            from hmux.opencode import OpenCodeDriver
-            for item in OpenCodeDriver().list_sessions(limit=25, live_only=True):
-                if item["session_id"] in seen_ids or item["session_id"] in seen_native_ids:
-                    continue
-                active.append({
-                    "session_id": item["session_id"],
-                    "harness": "opencode",
-                    "task_name": item["title"],
-                    "branch": "main",
-                    "status": "RUNNING",
-                    "model": item["model"],
-                    "type": "opencode-db",
-                    "socket_path": "",
-                })
-                seen_ids.add(item["session_id"])
-        except Exception:
-            pass
+        if include_opencode:
+            try:
+                from hmux.opencode import OpenCodeDriver
+                for item in OpenCodeDriver().list_sessions(limit=25, live_only=True):
+                    if item["session_id"] in seen_ids or item["session_id"] in seen_native_ids:
+                        continue
+                    active.append({
+                        "session_id": item["session_id"],
+                        "harness": "opencode",
+                        "task_name": item["title"],
+                        "branch": "main",
+                        "status": "RUNNING",
+                        "model": item["model"],
+                        "type": "opencode-db",
+                        "socket_path": "",
+                    })
+                    seen_ids.add(item["session_id"])
+            except Exception:
+                pass
 
         return active
 
@@ -400,30 +405,7 @@ class MessageRouter:
 
         for s in active:
             if s["session_id"] != from_session:
-                if s.get("type") == "opencode-db":
-                    from hmux.opencode import OpenCodeDriver
-                    driver = OpenCodeDriver()
-                    target = self.state_mgr.get(s["session_id"])
-                    if not target:
-                        info = driver.get_session_info(s["session_id"])
-                        if not info:
-                            continue
-                        target = FleetSession(
-                            session_id=info["session_id"],
-                            harness="opencode",
-                            task_name=info["title"],
-                            prompt="",
-                            worktree_path=info["directory"] or os.getcwd(),
-                            status="COMPLETED",
-                            metadata={
-                                "native_session_id": info["session_id"],
-                                "opencode_db": True,
-                            },
-                            model=info["model"],
-                        )
-                    if driver.send_prompt(target, envelope):
-                        delivered.append(s["session_id"])
-                elif self._inject_socket(s["socket_path"], envelope):
+                if self._inject_socket(s["socket_path"], envelope):
                     delivered.append(s["session_id"])
 
         # Record in message log

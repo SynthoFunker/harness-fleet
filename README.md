@@ -5,7 +5,7 @@
 [![Protocol](https://img.shields.io/badge/MCP-Supported-orange.svg)](https://modelcontextprotocol.io)
 [![Built with AI](https://img.shields.io/badge/built%20using-%20%20AI-blueviolet.svg)](#-built-with-ai)
 
-`hmux` (Harness Multiplexer) is a lightweight, zero-dependency fleet manager and real-time inter-harness communication mesh for AI coding agents (**Antigravity**, **Codex**, **OpenCode(not tested)**, **Hermes**, **Pi**, **Freebuff(not tested)**,.) on a single machine.
+`hmux` (Harness Multiplexer) is a lightweight, zero-dependency fleet manager and real-time inter-harness communication mesh for AI coding agents (**Antigravity**, **Codex**, **OpenCode**, **Hermes**, **Pi**, **Freebuff(not tested)**,.) on a single machine.
 
 It solves the two biggest problems in multi-agent pair programming:
 1. **Concurrency Without Conflicts:** Automatic Git worktree isolation so multiple agents can code simultaneously without stepping on each other's changes.
@@ -29,6 +29,7 @@ flowchart TD
         H2["Codex CLI"] <-->|hmux talk / MCP| Router
         H3["Pi Coding Agent"] <-->|hmux talk / MCP| Router
         H4["Hermes Agent"] <-->|hmux talk / MCP| Router
+        H5["OpenCode"] <-->|hmux talk / MCP| Router
     end
 
     Router <-->|Real-time In-Session DMs| Agents
@@ -169,6 +170,31 @@ To let your AI coding agents talk to each other autonomously, add `hmux` to your
 codex mcp add hmux -- hmux mcp
 ```
 
+**OpenCode V2 (`~/.config/opencode/opencode.json`)**:
+```json
+{
+  "mcp": {
+    "servers": {
+      "hmux": {
+        "type": "local",
+        "command": ["hmux", "mcp"],
+        "timeout": { "execution": 600000 }
+      }
+    }
+  }
+}
+```
+Use an absolute path (for example `["/home/you/.local/bin/hmux", "mcp"]`) if `hmux` is not on OpenCode's `PATH`. The longer execution timeout keeps `talk_to_harness(..., wait_for_reply=True)` alive while the remote agent works.
+
+OpenCode V2 sessions are read directly from `~/.local/share/opencode/opencode.db`, so `hmux sessions` lists live TUIs without HMUX having spawned them. Address one by its native ID:
+
+```bash
+hmux sessions --live-only
+hmux talk ses_abc123 "Please review the migration" --wait
+```
+
+Replies are extracted from the OpenCode message store after the turn completes. Native OpenCode sessions are intentionally excluded from `hmux broadcast` so a fleet-wide announcement never starts unsolicited model turns in every open TUI; sessions spawned and managed by HMUX remain broadcast targets.
+
 ---
 
 ## 🛠 Supported Harnesses
@@ -177,7 +203,7 @@ codex mcp add hmux -- hmux mcp
 | :--- | :--- | :--- |
 | **Google Antigravity** | `agy`, `antigravity` | Interactive, Headless, Subagents |
 | **Codex** | `codex` | Interactive TUI, `exec`, `app-server` |
-| **OpenCode** | `opencode`, `open-code` | Interactive, Headless, `acp` |
+| **OpenCode** | `opencode`, `open-code` | Interactive, Headless (`run --format json`), V2 SQLite session store |
 | **Pi Agent** | `pi` | Interactive REPL, Non-interactive (`-p`), RPC |
 | **Hermes** | `hermes` | Interactive Chat, `-z`, ACP Server |
 | **Freebuff** | `freebuff`, `manicode` | Interactive, `.agents` CI mode |

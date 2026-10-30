@@ -400,8 +400,8 @@ def sessions_cmd(live_only: bool, harness: str, limit: int):
     router = MessageRouter()
     catalog = SessionCatalog()
 
-    # 1. Active chatting sessions
-    active = router.list_active_sessions()
+    # 1. Active chatting sessions (including live OpenCode sessions)
+    active = router.list_active_sessions(include_opencode=True)
     reg = HarnessRegistry()
     if active or live_only:
         table_live = Table(title="🟢 Currently Active Chatting Harnesses", header_style="bold green", expand=True)
