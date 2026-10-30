@@ -25,6 +25,21 @@ def clean_ansi(text: str) -> str:
     stripped = ANSI_OSC_RE.sub("", stripped)
     return stripped
 
+def get_chat_mtime(chat_dir: Path) -> float:
+    """Get the latest modification time of files inside a chat directory."""
+    mtime = 0.0
+    for fname in ("chat-messages.json", "log.jsonl", "chat-meta.json", "run-state.json"):
+        f = chat_dir / fname
+        if f.exists():
+            try:
+                mtime = max(mtime, f.stat().st_mtime)
+            except OSError:
+                pass
+    try:
+        return mtime or chat_dir.stat().st_mtime
+    except OSError:
+        return 0.0
+
 class FreebuffDriver:
     """
     Manages automated PTY interactions and response extraction for Freebuff.
@@ -49,7 +64,7 @@ class FreebuffDriver:
             if chats_path.exists():
                 dirs = [d for d in chats_path.iterdir() if d.is_dir()]
                 if dirs:
-                    dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+                    dirs.sort(key=get_chat_mtime, reverse=True)
                     return dirs[0]
 
         # 2. Global fallback: pick the newest chat directory across all projects
@@ -61,7 +76,7 @@ class FreebuffDriver:
                     for d in c_dir.iterdir():
                         if d.is_dir():
                             try:
-                                all_chats.append((d.stat().st_mtime, d))
+                                all_chats.append((get_chat_mtime(d), d))
                             except OSError:
                                 pass
         except Exception:
@@ -152,7 +167,7 @@ class FreebuffDriver:
         min_msg_index: int = 0
     ) -> Optional[str]:
         """
-        Extract the latest completed assistant response from chat-messages.json.
+        Extract the latest completed assistant response strictly after min_msg_index.
         """
         msgs_file = chat_dir / "chat-messages.json"
         if msgs_file.exists():
@@ -172,33 +187,10 @@ class FreebuffDriver:
                                 ]
                                 if text_blocks:
                                     res = "\n\n".join(text_blocks).strip()
-                                    # Clean up interruption tag if present
                                     res = res.replace("\n\n[response interrupted]", "").strip()
                                     return res
                                 if m.get("content"):
                                     return m["content"].strip()
-            except Exception:
-                pass
-
-        # Fallback to log.jsonl inspection
-        log_file = chat_dir / "log.jsonl"
-        if log_file.exists():
-            try:
-                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = f.readlines()
-                for line in reversed(lines):
-                    if not line.strip():
-                        continue
-                    try:
-                        record = json.loads(line)
-                        if record.get("msg") == "Main prompt finished":
-                            continue
-                        if "fullResponse" in record.get("data", {}):
-                            return record["data"]["fullResponse"].strip()
-                        if "fullResponse" in record:
-                            return record["fullResponse"].strip()
-                    except Exception:
-                        pass
             except Exception:
                 pass
 
@@ -229,20 +221,6 @@ class FreebuffDriver:
                 response = self.extract_latest_response(chat_dir, min_msg_index=initial_msg_count)
                 if response:
                     return response
-
-            # Check log.jsonl as backup
-            log_path = chat_dir / "log.jsonl"
-            if log_path.exists():
-                try:
-                    with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-                        lines = f.readlines()
-                    for line in reversed(lines[-10:]):
-                        if '"msg":"Main prompt finished"' in line or '"fullResponse"' in line:
-                            resp = self.extract_latest_response(chat_dir, min_msg_index=initial_msg_count)
-                            if resp:
-                                return resp
-                except Exception:
-                    pass
 
         return None
 
