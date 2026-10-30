@@ -142,6 +142,12 @@ class TestDashboardStatus(unittest.TestCase):
         # Should detect that PID 5555 was recycled and does not belong to hermes
         self.assertFalse(session.is_alive())
 
+    def test_build_mesh_activity_table(self):
+        from hmux.dashboard import build_mesh_activity_table
+        table = build_mesh_activity_table(limit=5)
+        self.assertIn("Mesh", table.title)
+        self.assertEqual(len(table.columns), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

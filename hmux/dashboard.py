@@ -6,6 +6,7 @@ Rich-powered live visualization of all running and historical harnesses.
 import os
 import time
 import psutil
+from io import StringIO
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Dict, Any
 
@@ -466,6 +467,41 @@ def get_recent_logs(session_id: str, max_lines: int = 15) -> str:
     except Exception as e:
         return f"Error reading logs: {e}"
 
+def build_mesh_activity_table(limit: int = 5) -> Table:
+    """Build a rich table showing recent inter-harness mesh communications."""
+    from hmux.router import MessageRouter
+    r = MessageRouter()
+    msgs = r._read_raw().get("messages", [])
+
+    table = Table(
+        title="📨 Inter-Harness Mesh Activity (Recent Messages)",
+        header_style="bold magenta",
+        expand=True
+    )
+    table.add_column("Time", style="dim", width=10)
+    table.add_column("Route", style="bold cyan", width=28)
+    table.add_column("Message Preview", style="white")
+    table.add_column("Status & Reply", style="bold green", width=22)
+
+    if not msgs:
+        table.add_row("-", "No messages yet", "Use 'hmux talk <target> \"<msg>\"' to message an agent", "-")
+    else:
+        for m in msgs[-limit:]:
+            ts = m.get("timestamp", "")[11:19] if m.get("timestamp") else "-"
+            route = f"{m.get('from_session', '?')} ➔ {m.get('to_session', '?')}"
+            body = (m.get("body") or "").replace("\n", " ").strip()[:50]
+            status = m.get("status", "SENT")
+            if status == "REPLIED":
+                reply_text = (m.get("reply") or "").replace("\n", " ").strip()[:24]
+                stat_disp = f"[bold green]✓ REPLIED[/bold green]\n[dim]{reply_text}[/dim]" if reply_text else "[bold green]✓ REPLIED[/bold green]"
+            elif status == "DELIVERED":
+                stat_disp = "[bold cyan]● DELIVERED[/bold cyan]"
+            else:
+                stat_disp = f"[yellow]{status}[/yellow]"
+            table.add_row(ts, route, body, stat_disp)
+
+    return table
+
 def run_live_dashboard(refresh_interval: float = 1.5) -> None:
     """Run interactive continuous live dashboard until Ctrl-C."""
     mgr = StateManager()
@@ -477,46 +513,70 @@ def run_live_dashboard(refresh_interval: float = 1.5) -> None:
                 active_sessions, remaining_externals, _ = get_fleet_sessions(mgr, reg, show_all=False)
                 table = build_fleet_table(active_sessions, reg=reg)
 
-                # Layout: Top is table, middle is log preview, bottom is footer
-                layout = Layout()
-                table_size = max(8, len(active_sessions) + (len(remaining_externals) + 6 if remaining_externals else 0) + 4)
-                layout.split_column(
-                    Layout(name="header", size=3),
-                    Layout(name="tables", size=table_size),
-                    Layout(name="logs"),
-                    Layout(name="footer", size=3)
-                )
+                term_height = console.size.height or 24
+                term_width = console.size.width or 80
 
+                # Measure actual height of the fleet table
+                buf = StringIO()
+                measuring_console = Console(file=buf, width=term_width)
+                measuring_console.print(table)
+                table_height = len(buf.getvalue().splitlines())
+
+                # Usable space excluding header (3) and footer (3)
+                usable_height = max(10, term_height - 6)
+
+                # If there are remaining external processes, build their table too
+                ext_table = build_external_table(remaining_externals, reg=reg) if remaining_externals else None
+                ext_height = 0
+                if ext_table:
+                    buf_ext = StringIO()
+                    measuring_console = Console(file=buf_ext, width=term_width)
+                    measuring_console.print(ext_table)
+                    ext_height = len(buf_ext.getvalue().splitlines())
+
+                total_tables_height = table_height + ext_height
+
+                # Only show Mesh Activity panel if terminal has ample remaining height (>= 8 lines)
+                show_mesh_activity = (usable_height - total_tables_height) >= 8
+
+                layout = Layout()
+                if show_mesh_activity:
+                    layout.split_column(
+                        Layout(name="header", size=3),
+                        Layout(name="tables", size=total_tables_height),
+                        Layout(name="activity"),
+                        Layout(name="footer", size=3)
+                    )
+                    mesh_table = build_mesh_activity_table(limit=5)
+                    layout["activity"].update(mesh_table)
+                else:
+                    layout.split_column(
+                        Layout(name="header", size=3),
+                        Layout(name="tables"),
+                        Layout(name="footer", size=3)
+                    )
+
+                installed_str = ", ".join([h.key for h in reg.list_installed()])
                 layout["header"].update(Panel(
-                    "[bold green]HMUX Dynamic Fleet Supervisor[/bold green] | Press [bold red]Ctrl+C[/bold red] to exit monitor",
+                    f"[bold green]HMUX Dynamic Fleet Supervisor[/bold green] | "
+                    f"Active: [bold green]{len(active_sessions)} running[/bold green] | "
+                    f"Installed: [bold yellow]{installed_str}[/bold yellow] | "
+                    f"Press [bold red]Ctrl+C[/bold red] to exit",
                     style="blue"
                 ))
 
-                if remaining_externals:
+                if remaining_externals and ext_table:
                     layout["tables"].split_column(
-                        Layout(name="managed"),
-                        Layout(name="external")
+                        Layout(name="managed", size=table_height),
+                        Layout(name="external", size=ext_height)
                     )
-                    ext_table = build_external_table(remaining_externals, reg=reg)
                     layout["tables"]["managed"].update(table)
                     layout["tables"]["external"].update(ext_table)
                 else:
                     layout["tables"].update(table)
 
-                # Log preview for most recent running session
-                active = next((s for s in active_sessions if s.status == "RUNNING"), None) or (active_sessions[0] if active_sessions else None)
-                if active:
-                    logs = get_recent_logs(active.session_id, max_lines=18)
-                    layout["logs"].update(Panel(
-                        Text.from_ansi(logs),
-                        title=f"Live Log Stream: {active.session_id} ({active.harness})",
-                        border_style="yellow"
-                    ))
-                else:
-                    layout["logs"].update(Panel("(no sessions currently running)", title="Live Log Stream"))
-
                 layout["footer"].update(Panel(
-                    "[bold cyan]Quick Commands:[/bold cyan]  hmux spawn -H <harness>  |  hmux attach <id>  |  hmux diff <id>  |  hmux kill <id|pid>",
+                    "[bold cyan]Quick Commands:[/bold cyan]  hmux talk <id> \"<msg>\"  |  hmux attach <id>  |  hmux logs <id>  |  hmux kill <id|pid>",
                     style="dim"
                 ))
 
