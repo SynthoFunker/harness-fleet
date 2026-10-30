@@ -40,6 +40,8 @@ class Supervisor:
         extra_args: Optional[List[str]] = None,
         use_worktree: bool = True,
         model: Optional[str] = None,
+        resume_session: Optional[str] = None,
+        wait: bool = False,
     ) -> FleetSession:
         """
         Spawn a new harness instance in an isolated worktree and background PTY daemon.
@@ -87,6 +89,41 @@ class Supervisor:
                 if os.path.exists(default_fb_dir):
                     worktree_path = default_fb_dir
 
+        # Resolve resume session if specified
+        effective_extra = list(extra_args or [])
+        native_id = None
+        if resume_session:
+            native_id = resume_session
+            if harness.key == "opencode":
+                if not native_id.startswith("ses_"):
+                    # Try resolving from HMUX session state
+                    sess = self.state.get(resume_session)
+                    if sess and sess.metadata.get("native_session_id"):
+                        native_id = sess.metadata["native_session_id"]
+                    else:
+                        # Fallback query DB
+                        db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+                        if db_path.exists() and sess and sess.prompt:
+                            try:
+                                import sqlite3
+                                conn = sqlite3.connect(db_path)
+                                c = conn.cursor()
+                                c.execute(
+                                    "SELECT session_id FROM session_message WHERE data LIKE ? ORDER BY time_created DESC LIMIT 1;",
+                                    (f"%{sess.prompt[:40]}%",)
+                                )
+                                r = c.fetchone()
+                                if r:
+                                    native_id = r[0]
+                                conn.close()
+                            except Exception:
+                                pass
+                effective_extra.extend(["-s", native_id])
+            elif harness.key == "codex":
+                effective_extra.extend(["resume", native_id])
+            elif harness.key == "pi":
+                effective_extra.extend(["--session", native_id])
+
         # Resolve actual model name for tracking
         effective_model = self.registry.resolve_model(harness.key, model)
 
@@ -96,7 +133,7 @@ class Supervisor:
             worktree_dir=worktree_path,
             prompt=effective_prompt,
             headless=headless,
-            extra_args=extra_args,
+            extra_args=effective_extra,
             model=model
         )
 
@@ -108,7 +145,8 @@ class Supervisor:
             worktree_path=worktree_path,
             branch=branch_name,
             status="RUNNING",
-            model=effective_model
+            model=effective_model,
+            metadata={"native_session_id": native_id} if native_id else {}
         )
 
         # Pure Zero-PTY headless invocation: for harnesses with native CLI non-interactive modes (e.g. codex exec)
@@ -130,6 +168,10 @@ class Supervisor:
             session.metadata["headless"] = True
             session.metadata["zero_pty"] = True
             self.state.register(session)
+            if wait:
+                proc.wait()
+                session.status = "COMPLETED"
+                self.state.update(session)
             return session
 
         # Launch background worker for interactive PTY sessions

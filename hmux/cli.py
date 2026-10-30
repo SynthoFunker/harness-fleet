@@ -60,8 +60,10 @@ def harnesses_cmd():
 @click.option("--model", "-m", default=None, help="Specific AI model to use (e.g. gpt-4o, claude-3-5-sonnet, flint-free)")
 @click.option("--from-harness", default=None, help="Extract handover context from this harness (via session-transmuter)")
 @click.option("--from-session", default=None, help="Specific session ID for handover")
+@click.option("--session", "-s", "resume_session", default=None, help="Resume or continue an existing harness session ID")
 @click.option("--no-worktree", is_flag=True, default=False, help="Run directly in current directory instead of worktree")
 @click.option("--headless", is_flag=True, default=False, help="Run harness non-interactively if supported")
+@click.option("--wait", "-w", is_flag=True, default=False, help="Wait for headless task to complete and print output")
 @click.option("--attach", "-a", is_flag=True, default=False, help="Attach interactively immediately after spawning")
 def spawn_cmd(
     harness: str,
@@ -70,8 +72,10 @@ def spawn_cmd(
     model: str,
     from_harness: str,
     from_session: str,
+    resume_session: str,
     no_worktree: bool,
     headless: bool,
+    wait: bool,
     attach: bool
 ):
     """Spawn a harness inside an isolated Git worktree and background PTY supervisor."""
@@ -85,7 +89,9 @@ def spawn_cmd(
             from_session=from_session,
             headless=headless,
             use_worktree=not no_worktree,
-            model=model
+            model=model,
+            resume_session=resume_session,
+            wait=wait
         )
 
         console.print(f"[bold green]✔ Successfully spawned {session.harness} session:[/bold green] [bold cyan]{session.session_id}[/bold cyan]")
@@ -95,6 +101,10 @@ def spawn_cmd(
         console.print(f"  • Worktree: [dim]{session.worktree_path}[/dim]")
         console.print(f"  • Log file: [dim]{session.log_file}[/dim]")
         console.print(f"  • Attach: [cyan]hmux attach {session.session_id}[/cyan]")
+
+        if wait and headless:
+            console.print(f"\n[bold green]=== Output from {session.session_id} ===[/bold green]")
+            logs_cmd.callback(session.session_id, follow=False, lines=100)
 
         if attach:
             sup.attach(session.session_id)
