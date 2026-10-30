@@ -48,11 +48,12 @@ flowchart TD
 * View all with `hmux sessions` or inspect a specific session with `hmux inspect <session_id>`.
 
 ### 3. Model Context Protocol (MCP) Server (`hmux mcp`)
-Exposes fleet discovery and messaging tools directly into agent prompt loops:
-* `list_active_harnesses()`: Find online agents and current tasks.
-* `list_all_sessions()`: Explore historical sessions and goals across all harnesses.
-* `talk_to_harness(target, message, wait_for_reply=True)`: Message another agent autonomously.
-* `broadcast_to_harnesses(message)`: Announce updates to the fleet.
+Exposes fleet discovery, messaging, and orchestration tools directly into agent prompt loops:
+* **Discovery:** `list_active_harnesses()`, `list_all_sessions()`, `inspect_session()`, `get_fleet_status()`
+* **Messaging:** `talk_to_harness(target, message, wait_for_reply=True)`, `broadcast_to_harnesses(message)`, `read_harness_inbox()`
+* **Orchestration:** `spawn_harness(...)`, `handover_to_harness(...)`, `diff_session(...)`
+
+Export the tool schemas in Antigravity's lazy-tool JSON format with `hmux mcp --export-schemas <dir>`.
 
 ### 4. Automated Git Worktree Sandboxing
 * Each spawned agent works in a dedicated worktree (`.hmux_worktrees/<task>`) on a separate branch (`agent/<task>`).

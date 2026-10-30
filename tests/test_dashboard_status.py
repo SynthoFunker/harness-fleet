@@ -2,8 +2,11 @@
 Unit tests for HMUX Dashboard, Status Table, and Session Filtering
 """
 
+import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from hmux.state import FleetSession, StateManager
@@ -141,6 +144,39 @@ class TestDashboardStatus(unittest.TestCase):
         )
         # Should detect that PID 5555 was recycled and does not belong to hermes
         self.assertFalse(session.is_alive())
+
+    def test_ambient_opencode_liveness_uses_busy_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "opencode.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time_busy INTEGER, time_idle INTEGER);"
+            )
+            conn.executemany(
+                "INSERT INTO session_v2 VALUES (?, ?, ?);",
+                [
+                    ("ses_busy", 2000, 1000),
+                    ("ses_idle", 1000, 2000),
+                    ("ses_new", 3000, None),
+                ],
+            )
+            conn.commit()
+            conn.close()
+
+            def session_for(session_id):
+                return FleetSession(
+                    session_id=session_id,
+                    harness="opencode",
+                    task_name="task",
+                    prompt="",
+                    worktree_path="/tmp",
+                    metadata={"ambient": True, "native_session_id": session_id},
+                )
+
+            self.assertTrue(session_for("ses_busy")._opencode_session_is_busy(db_path))
+            self.assertFalse(session_for("ses_idle")._opencode_session_is_busy(db_path))
+            self.assertTrue(session_for("ses_new")._opencode_session_is_busy(db_path))
+            self.assertFalse(session_for("ses_missing")._opencode_session_is_busy(db_path))
 
     def test_build_mesh_activity_table(self):
         from hmux.dashboard import build_mesh_activity_table

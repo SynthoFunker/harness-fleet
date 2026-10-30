@@ -54,6 +54,33 @@ class FleetSession:
         self.metadata = metadata or {}
         self.model = model
 
+    def _opencode_session_is_busy(self, db_path: Optional[Path] = None) -> bool:
+        """
+        Return True only while this OpenCode session is actively running a turn.
+
+        OpenCode TUIs share one server process, so PID checks cannot identify a
+        specific session. The session_v2 busy/idle timestamps can.
+        """
+        session_id = self.metadata.get("native_session_id") or self.session_id
+        db_path = db_path or (Path.home() / ".local" / "share" / "opencode" / "opencode.db")
+        if not Path(db_path).exists():
+            return False
+        try:
+            con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            cur = con.cursor()
+            cur.execute(
+                "SELECT time_busy, time_idle FROM session_v2 WHERE id = ? LIMIT 1;",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            con.close()
+            if not row:
+                return False
+            busy, idle = row
+            return bool(busy) and (not idle or busy > idle)
+        except Exception:
+            return False
+
     def is_alive(self) -> bool:
         # 1. Check if Unix domain socket is active and accepting connections
         if self.socket_path and os.path.exists(self.socket_path):
@@ -65,6 +92,11 @@ class FleetSession:
                 return True
             except Exception:
                 pass
+
+        # OpenCode TUIs share one server process, so a PID match cannot prove
+        # this specific session is active. Use its busy/idle timestamps instead.
+        if self.metadata.get("ambient") and self.harness == "opencode":
+            return self._opencode_session_is_busy()
 
         from hmux.registry import HarnessRegistry
         reg = HarnessRegistry()
@@ -109,19 +141,6 @@ class FleetSession:
                     try:
                         data = json.loads(hermes_active.read_text())
                         if data.get("entries"):
-                            return True
-                    except Exception:
-                        pass
-            elif self.harness == "opencode":
-                opencode_db = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
-                if opencode_db.exists():
-                    try:
-                        con = sqlite3.connect(opencode_db)
-                        cur = con.cursor()
-                        cur.execute("SELECT time_updated FROM session_v2 WHERE COALESCE(time_archived, 0) = 0 ORDER BY time_updated DESC LIMIT 1;")
-                        row = cur.fetchone()
-                        con.close()
-                        if row and (int(time.time() * 1000) - row[0]) < 14400000:
                             return True
                     except Exception:
                         pass
@@ -431,41 +450,43 @@ class StateManager:
             except Exception:
                 pass
 
-        # 3. OpenCode: Check live sessions in ~/.local/share/opencode/opencode.db or running processes
+        # 3. OpenCode: only sessions actively executing a turn are ambient-live.
         opencode_db = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
         if opencode_db.exists():
             try:
-                con = sqlite3.connect(opencode_db)
+                con = sqlite3.connect(f"file:{opencode_db}?mode=ro", uri=True)
                 cur = con.cursor()
                 cur.execute(
                     """
-                    SELECT id, title, directory, model, time_updated, time_created
+                    SELECT id, title, directory, model, time_created
                     FROM session_v2
                     WHERE COALESCE(time_archived, 0) = 0
+                      AND parent_id IS NULL
+                      AND time_busy IS NOT NULL
+                      AND time_busy != 0
+                      AND (time_idle IS NULL OR time_busy > time_idle)
                     ORDER BY time_updated DESC
-                    LIMIT 1;
+                    LIMIT 25;
                     """
                 )
-                row = cur.fetchone()
+                rows = cur.fetchall()
                 con.close()
-                if row:
-                    time_updated = row[4]
-                    now_ms = int(time.time() * 1000)
-                    if (now_ms - time_updated) < 14400000:
-                        from hmux.opencode import parse_model
+                if rows:
+                    from hmux.opencode import parse_model
+                    oc_pid = None
+                    for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+                        try:
+                            if registry.match_process(p.info['name'] or '', p.info['cmdline'] or []) == 'opencode':
+                                oc_pid = p.info['pid']
+                                break
+                        except Exception:
+                            continue
+                    for row in rows:
                         sid = row[0]
                         title = row[1] or "OpenCode Interactive"
                         directory = row[2] or str(Path.home())
                         model = parse_model(row[3]) or registry.resolve_model("opencode")
-                        start_iso = datetime.fromtimestamp(row[5] / 1000, timezone.utc).isoformat() if row[5] else None
-                        oc_pid = None
-                        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
-                            try:
-                                if registry.match_process(p.info['name'] or '', p.info['cmdline'] or []) == 'opencode':
-                                    oc_pid = p.info['pid']
-                                    break
-                            except Exception:
-                                continue
+                        start_iso = datetime.fromtimestamp(row[4] / 1000, timezone.utc).isoformat() if row[4] else None
                         ambient_sessions.append(FleetSession(
                             session_id=sid,
                             harness="opencode",
@@ -478,7 +499,7 @@ class StateManager:
                             metadata={"ambient": True, "native_session_id": sid},
                             model=model
                         ))
-                        seen_harnesses.add("opencode")
+                    seen_harnesses.add("opencode")
             except Exception:
                 pass
 
