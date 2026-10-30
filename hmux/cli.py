@@ -139,9 +139,18 @@ def logs_cmd(session_id: str, follow: bool, lines: int):
         return
 
     if not follow:
-        with open(log_path, "r", errors="replace") as f:
-            all_lines = f.readlines()
-            console.print("".join(all_lines[-lines:]), end="")
+        content = []
+        if os.path.exists(log_path):
+            with open(log_path, "r", errors="replace") as f:
+                content.extend(f.readlines())
+        err_path = log_path + ".err"
+        if os.path.exists(err_path):
+            with open(err_path, "r", errors="replace") as f:
+                content.extend(f.readlines())
+        if content:
+            console.print("".join(content[-lines:]), end="")
+        else:
+            console.print("[dim](No log output recorded yet)[/dim]")
     else:
         console.print(f"[dim]Following logs for {session_id}... Press Ctrl+C to stop.[/dim]\n")
         try:

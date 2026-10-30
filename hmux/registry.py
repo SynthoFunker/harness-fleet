@@ -414,13 +414,13 @@ class HarnessRegistry:
 
         elif key == "opencode":
             if headless and prompt:
-                cmd = [harness.binary_path, "run"]
+                cmd = [harness.binary_path, "run", "--standalone"]
                 if model:
                     cmd.extend(["-m", model])
                 cmd.extend(extra)
                 cmd.append(prompt)
             else:
-                cmd = [harness.binary_path]
+                cmd = [harness.binary_path, "--standalone"]
                 if model:
                     cmd.extend(["-m", model])
                 cmd.extend(extra)
