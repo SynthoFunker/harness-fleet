@@ -57,6 +57,7 @@ def harnesses_cmd():
 @click.option("--harness", "-H", required=True, help="Target harness (e.g. codex, opencode, agy, hermes, pi, freebuff)")
 @click.option("--task", "-t", default=None, help="Task name for branch & worktree (e.g. auth-fix)")
 @click.option("--prompt", "-p", default=None, help="Initial prompt or instruction for the harness")
+@click.option("--model", "-m", default=None, help="Specific AI model to use (e.g. gpt-4o, claude-3-5-sonnet, flint-free)")
 @click.option("--from-harness", default=None, help="Extract handover context from this harness (via session-transmuter)")
 @click.option("--from-session", default=None, help="Specific session ID for handover")
 @click.option("--no-worktree", is_flag=True, default=False, help="Run directly in current directory instead of worktree")
@@ -66,6 +67,7 @@ def spawn_cmd(
     harness: str,
     task: str,
     prompt: str,
+    model: str,
     from_harness: str,
     from_session: str,
     no_worktree: bool,
@@ -82,11 +84,14 @@ def spawn_cmd(
             from_harness=from_harness,
             from_session=from_session,
             headless=headless,
-            use_worktree=not no_worktree
+            use_worktree=not no_worktree,
+            model=model
         )
 
         console.print(f"[bold green]✔ Successfully spawned {session.harness} session:[/bold green] [bold cyan]{session.session_id}[/bold cyan]")
         console.print(f"  • Task / Branch: [bold yellow]{session.task_name}[/bold yellow] ({session.branch or 'cwd'})")
+        if session.model:
+            console.print(f"  • Model: [bold green]{session.model}[/bold green]")
         console.print(f"  • Worktree: [dim]{session.worktree_path}[/dim]")
         console.print(f"  • Log file: [dim]{session.log_file}[/dim]")
         console.print(f"  • Attach: [cyan]hmux attach {session.session_id}[/cyan]")
@@ -206,8 +211,9 @@ def merge_cmd(session_id: str, target_branch: str):
 @click.option("--to-harness", "-t", required=True, help="Target harness to launch")
 @click.option("--task", default=None, help="Task name for target worktree")
 @click.option("--prompt", "-p", default="", help="Additional directive for target harness")
+@click.option("--model", "-m", default=None, help="Specific AI model for target harness")
 @click.option("--attach/--no-attach", "-a", default=False, help="Attach to new harness immediately")
-def handover_cmd(from_session: str, to_harness: str, task: str, prompt: str, attach: bool):
+def handover_cmd(from_session: str, to_harness: str, task: str, prompt: str, model: str, attach: bool):
     """Transfer state out-of-band via session-transmuter and spawn target harness."""
     sup = Supervisor()
     source_harness = from_session
@@ -236,7 +242,8 @@ def handover_cmd(from_session: str, to_harness: str, task: str, prompt: str, att
             prompt=prompt,
             from_harness=source_harness,
             from_session=source_session_id,
-            use_worktree=True
+            use_worktree=True,
+            model=model
         )
         console.print(f"[bold green]✔ Handover complete! Spawned {session.session_id}[/bold green]")
         if attach:
@@ -250,8 +257,13 @@ def handover_cmd(from_session: str, to_harness: str, task: str, prompt: str, att
 def kill_cmd(session_id: str, clean_worktree: bool):
     """Terminate a running harness session."""
     sup = Supervisor()
+    sess = sup.state.get(session_id)
+    was_completed = sess and sess.status == "COMPLETED"
     if sup.kill(session_id, remove_worktree=clean_worktree):
-        console.print(f"[bold green]✔ Stopped session {session_id}[/bold green]")
+        if was_completed:
+            console.print(f"[bold green]✔ Cleaned up completed session {session_id}[/bold green]")
+        else:
+            console.print(f"[bold green]✔ Stopped session {session_id}[/bold green]")
     else:
         console.print(f"[bold red]Session {session_id} not found.[/bold red]")
 
@@ -327,19 +339,29 @@ def sessions_cmd(live_only: bool, harness: str, limit: int):
 
     # 1. Active chatting sessions
     active = router.list_active_sessions()
+    reg = HarnessRegistry()
     if active or live_only:
         table_live = Table(title="🟢 Currently Active Chatting Harnesses", header_style="bold green", expand=True)
         table_live.add_column("Session ID", style="cyan")
         table_live.add_column("Harness", style="yellow")
+        table_live.add_column("Model", style="bold blue")
         table_live.add_column("Task / Context", style="white")
         table_live.add_column("Branch", style="green")
         table_live.add_column("Status", style="bold green")
 
         if not active:
-            table_live.add_row("-", "No active sessions running", "-", "-", "-")
+            table_live.add_row("-", "No active sessions running", "-", "-", "-", "-")
         else:
             for s in active:
-                table_live.add_row(s["session_id"], s["harness"], s["task_name"], s["branch"], s["status"])
+                model_disp = s.get("model") or reg.resolve_model(s["harness"])
+                table_live.add_row(
+                    s["session_id"],
+                    s["harness"],
+                    model_disp,
+                    s["task_name"],
+                    s["branch"],
+                    s["status"]
+                )
         console.print(table_live)
 
     if live_only:
@@ -401,14 +423,15 @@ def inspect_cmd(target: str, secondary: Optional[str]):
                 harness = "unknown"
 
     detail = catalog.inspect_session(harness=harness, session_id=session_id)
+    state_sess = mgr.get(session_id)
     if not detail:
         # Check if it's an active registered ambient session in state manager
-        state_sess = mgr.get(session_id)
         if state_sess:
             detail = {
                 "harness": state_sess.harness,
                 "session_id": state_sess.session_id,
                 "title": state_sess.task_name,
+                "model": state_sess.model or "Default (configured in harness)",
                 "workspace_root": state_sess.worktree_path or os.getcwd(),
                 "total_turns": 0,
                 "created_at": state_sess.start_time,
@@ -419,6 +442,8 @@ def inspect_cmd(target: str, secondary: Optional[str]):
         else:
             console.print(f"[bold red]Session '{session_id}' not found across any harness.[/bold red]")
             sys.exit(1)
+    elif state_sess and state_sess.model:
+        detail["model"] = state_sess.model
 
     table = Table(title=f"🔍 Session Inspection: {detail['harness'].upper()} → {detail['session_id']}", header_style="bold cyan")
     table.add_column("Field", style="bold yellow", width=18)
@@ -426,6 +451,8 @@ def inspect_cmd(target: str, secondary: Optional[str]):
 
     table.add_row("Harness", detail["harness"])
     table.add_row("Session ID", detail["session_id"])
+    if detail.get("model"):
+        table.add_row("Model", detail["model"])
     table.add_row("Title / Goal", detail.get("title", "-"))
     table.add_row("Workspace", detail.get("workspace_root", "-"))
     table.add_row("Turns Recorded", str(detail.get("total_turns", 0)))

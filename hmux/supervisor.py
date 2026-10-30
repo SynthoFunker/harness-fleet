@@ -39,6 +39,7 @@ class Supervisor:
         headless: bool = False,
         extra_args: Optional[List[str]] = None,
         use_worktree: bool = True,
+        model: Optional[str] = None,
     ) -> FleetSession:
         """
         Spawn a new harness instance in an isolated worktree and background PTY daemon.
@@ -75,13 +76,17 @@ class Supervisor:
                 except Exception as e:
                     print(f"Warning: Failed to create git worktree ({e}), using current directory.")
 
+        # Resolve actual model name for tracking
+        effective_model = self.registry.resolve_model(harness.key, model)
+
         # Build execution command
         cmd, env = self.registry.build_command(
             harness_name=harness.key,
             worktree_dir=worktree_path,
             prompt=effective_prompt,
             headless=headless,
-            extra_args=extra_args
+            extra_args=extra_args,
+            model=model
         )
 
         session = FleetSession(
@@ -91,7 +96,8 @@ class Supervisor:
             prompt=effective_prompt,
             worktree_path=worktree_path,
             branch=branch_name,
-            status="RUNNING"
+            status="RUNNING",
+            model=effective_model
         )
 
         # Launch background worker
@@ -252,7 +258,9 @@ class Supervisor:
                 except Exception:
                     pass
 
-        session.status = "STOPPED"
+        # Keep COMPLETED status if it finished naturally
+        if session.status != "COMPLETED":
+            session.status = "STOPPED"
         self.state.update(session)
 
         # Cleanup socket

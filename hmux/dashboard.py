@@ -43,10 +43,21 @@ def format_resource(pid: Optional[int]) -> str:
     except Exception:
         return "-"
 
-def build_fleet_table(sessions: List[FleetSession]) -> Table:
+def extract_model_from_cmdline(cmdline: str) -> Optional[str]:
+    parts = cmdline.split()
+    for i, part in enumerate(parts):
+        if part in ("-m", "--model") and i + 1 < len(parts):
+            return parts[i + 1]
+    return None
+
+def build_fleet_table(sessions: List[FleetSession], reg: Optional[HarnessRegistry] = None) -> Table:
+    if reg is None:
+        reg = HarnessRegistry()
+
     table = Table(title="🤖 HMUX Harness Fleet Status", header_style="bold magenta", expand=True)
     table.add_column("Session ID", style="cyan", no_wrap=True)
     table.add_column("Harness", style="bold yellow")
+    table.add_column("Model", style="bold blue")
     table.add_column("Task / Branch", style="green")
     table.add_column("Status", justify="center")
     table.add_column("PID", justify="right", style="dim")
@@ -54,15 +65,17 @@ def build_fleet_table(sessions: List[FleetSession]) -> Table:
     table.add_column("Started", style="blue")
 
     if not sessions:
-        table.add_row("-", "No active sessions", "-", "-", "-", "-", "-")
+        table.add_row("-", "-", "No active sessions", "-", "-", "-", "-", "-")
         return table
 
     for s in sessions:
         branch_str = s.branch or (os.path.basename(s.worktree_path) if s.worktree_path else "main")
         start_short = s.start_time.split("T")[-1][:8] if s.start_time else "-"
+        resolved_model = s.model or reg.resolve_model(s.harness)
         table.add_row(
             s.session_id,
             s.harness,
+            resolved_model,
             f"{s.task_name} ({branch_str})",
             format_status(s.status),
             str(s.pid or "-"),
@@ -72,22 +85,28 @@ def build_fleet_table(sessions: List[FleetSession]) -> Table:
 
     return table
 
-def build_external_table(externals: List[ExternalHarness]) -> Table:
+def build_external_table(externals: List[ExternalHarness], reg: Optional[HarnessRegistry] = None) -> Table:
+    if reg is None:
+        reg = HarnessRegistry()
+
     table = Table(title="🌐 Ambient / External Harnesses (Detected in OS)", header_style="bold blue", expand=True)
     table.add_column("Harness", style="bold yellow")
+    table.add_column("Model", style="bold blue")
     table.add_column("PID", justify="right", style="cyan")
     table.add_column("Working Directory (CWD)", style="green")
     table.add_column("Resource Usage", justify="right")
     table.add_column("Command Preview", style="dim", no_wrap=False)
 
     if not externals:
-        table.add_row("-", "-", "No unmanaged harness processes running", "-", "-")
+        table.add_row("-", "-", "-", "No unmanaged harness processes running", "-", "-")
         return table
 
     for e in externals:
         cmd_prev = e.cmdline[:60] + "..." if len(e.cmdline) > 60 else e.cmdline
+        model = extract_model_from_cmdline(e.cmdline) or reg.resolve_model(e.harness)
         table.add_row(
             e.harness,
+            model,
             str(e.pid),
             e.cwd,
             f"{e.cpu_percent:.1f}% | {e.memory_mb:.0f}MB",

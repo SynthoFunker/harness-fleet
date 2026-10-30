@@ -125,6 +125,58 @@ class HarnessRegistry:
         """Return list of detected harnesses."""
         return list(self._installed.values())
 
+    def resolve_model(self, harness_key: str, explicit_model: Optional[str] = None) -> str:
+        """
+        Determine the real active AI model name for a harness, resolving explicit flags
+        or falling back to the harness's local user configuration files.
+        """
+        if explicit_model:
+            return explicit_model
+
+        clean = (harness_key or "").strip().lower()
+        home = Path.home()
+
+        if clean in ("codex",):
+            config_file = home / ".codex" / "config.toml"
+            if config_file.exists():
+                try:
+                    import re
+                    m = re.search(r'^\s*model\s*=\s*["\']([^"\']+)["\']', config_file.read_text(), re.M)
+                    if m:
+                        return m.group(1)
+                except Exception:
+                    pass
+            return "gpt-4o"
+
+        if clean in ("pi", "pi-coding-agent"):
+            settings_file = home / ".pi" / "agent" / "settings.json"
+            if settings_file.exists():
+                try:
+                    import json
+                    data = json.loads(settings_file.read_text())
+                    if data.get("defaultModel"):
+                        return data["defaultModel"]
+                except Exception:
+                    pass
+            return "flint-free"
+
+        if clean in ("antigravity", "agy", "gemini"):
+            return "gemini-2.5-pro"
+
+        if clean in ("opencode", "open-code"):
+            return "claude-3-5-sonnet"
+
+        if clean in ("hermes",):
+            return "hermes-3-70b"
+
+        if clean in ("claude", "claude-code"):
+            return "claude-3-5-sonnet"
+
+        if clean in ("aider",):
+            return "gpt-4o"
+
+        return "standard"
+
     def match_process(self, proc_name: str, cmdline: List[str]) -> Optional[str]:
         """
         Check if a running process corresponds to a registered harness.
@@ -227,7 +279,8 @@ class HarnessRegistry:
         worktree_dir: str,
         prompt: Optional[str] = None,
         headless: bool = False,
-        extra_args: Optional[List[str]] = None
+        extra_args: Optional[List[str]] = None,
+        model: Optional[str] = None
     ) -> Tuple[List[str], Dict[str, str]]:
         """
         Build process command and environment variables for a given harness.
@@ -250,6 +303,8 @@ class HarnessRegistry:
             cmd = [harness.binary_path]
             if headless and prompt:
                 cmd.append("exec")
+            if model:
+                cmd.extend(["-m", model])
             cmd.extend(["-C", worktree_dir])
             if not os.path.exists(os.path.join(worktree_dir, ".git")):
                 cmd.append("--skip-git-repo-check")
@@ -260,22 +315,30 @@ class HarnessRegistry:
         elif key == "opencode":
             if headless and prompt:
                 cmd = [harness.binary_path, "run"]
+                if model:
+                    cmd.extend(["-m", model])
                 cmd.extend(extra)
                 cmd.append(prompt)
             else:
                 cmd = [harness.binary_path]
+                if model:
+                    cmd.extend(["-m", model])
                 cmd.extend(extra)
                 if prompt:
                     cmd.append(prompt)
 
         elif key == "hermes":
             cmd = [harness.binary_path, "--in", worktree_dir]
+            if model:
+                cmd.extend(["--model", model])
             if prompt:
                 cmd.extend(["-z", prompt])
             cmd.extend(extra)
 
         elif key == "pi":
             cmd = [harness.binary_path]
+            if model:
+                cmd.extend(["--model", model])
             if headless and prompt:
                 cmd.append("-p")
             cmd.extend(extra)
@@ -284,12 +347,16 @@ class HarnessRegistry:
 
         elif key == "freebuff":
             cmd = [harness.binary_path, "--cwd", worktree_dir]
+            if model:
+                cmd.extend(["--model", model])
             cmd.extend(extra)
             if prompt:
                 cmd.append(prompt)
 
         elif key == "antigravity":
             cmd = [harness.binary_path, "--add-dir", worktree_dir]
+            if model:
+                cmd.extend(["--model", model])
             if headless and prompt:
                 cmd.extend(["--input-format", "text"])
             if prompt:
@@ -297,6 +364,9 @@ class HarnessRegistry:
             cmd.extend(extra)
 
         elif key == "claude":
+            cmd = [harness.binary_path]
+            if model:
+                cmd.extend(["--model", model])
             if headless and prompt:
                 cmd.extend(["-p", prompt])
             elif prompt:
@@ -304,11 +374,16 @@ class HarnessRegistry:
             cmd.extend(extra)
 
         elif key == "aider":
+            cmd = [harness.binary_path]
+            if model:
+                cmd.extend(["--model", model])
             cmd.extend(extra)
             if prompt:
                 cmd.extend(["--message", prompt])
 
         else:
+            if model:
+                cmd.extend(["--model", model])
             if prompt:
                 cmd.append(prompt)
             cmd.extend(extra)

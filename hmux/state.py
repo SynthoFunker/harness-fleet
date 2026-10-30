@@ -34,6 +34,7 @@ class FleetSession:
         log_file: Optional[str] = None,
         socket_path: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
     ):
         self.session_id = session_id
         self.harness = harness
@@ -49,6 +50,7 @@ class FleetSession:
         self.log_file = log_file or str(LOGS_DIR / f"{session_id}.log")
         self.socket_path = socket_path or str(SOCKETS_DIR / f"{session_id}.sock")
         self.metadata = metadata or {}
+        self.model = model
 
     def is_alive(self) -> bool:
         if not self.pid:
@@ -84,6 +86,7 @@ class FleetSession:
             "log_file": self.log_file,
             "socket_path": self.socket_path,
             "metadata": self.metadata,
+            "model": self.model,
         }
 
     @classmethod

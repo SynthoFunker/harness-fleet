@@ -104,6 +104,7 @@ class MessageRouter:
                     "task_name": s.task_name,
                     "branch": s.branch or "main",
                     "status": s.status,
+                    "model": s.model,
                     "type": "socket" if os.path.exists(s.socket_path) else "mailbox",
                     "socket_path": s.socket_path
                 })
@@ -120,6 +121,10 @@ class MessageRouter:
                         pid = ext.pid
                         break
 
+        from hmux.registry import HarnessRegistry
+        reg = HarnessRegistry()
+        resolved_model = reg.resolve_model(harness)
+
         session = FleetSession(
             session_id=session_id,
             harness=harness,
@@ -128,7 +133,8 @@ class MessageRouter:
             worktree_path=os.getcwd(),
             pid=pid,
             status="RUNNING",
-            metadata={"ambient": True}
+            metadata={"ambient": True},
+            model=resolved_model
         )
         self.state_mgr.register(session)
         return session
