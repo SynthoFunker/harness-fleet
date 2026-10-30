@@ -71,14 +71,24 @@ class TestHMUX(unittest.TestCase):
         self.assertIn("hermes-3-70b", cmd)
         self.assertIn("-z", cmd)
 
-        # Freebuff command building: must NOT include positional prompt or --model in CLI args
+        # Freebuff command building: must NOT include positional prompt or --model in CLI args for interactive
+        freebuff_bin = reg.get("freebuff").binary_path if "freebuff" in reg._installed else "/usr/local/bin/freebuff"
         if "freebuff" not in reg._installed:
-            reg._installed["freebuff"] = HarnessInfo("freebuff", "freebuff", "/usr/local/bin/freebuff", "Mock Freebuff")
+            reg._installed["freebuff"] = HarnessInfo("freebuff", "freebuff", freebuff_bin, "Mock Freebuff")
         cmd, env = reg.build_command("freebuff", "/tmp", prompt="Hello Freebuff", model="MiMo v2.6 Flash Fast")
-        self.assertEqual(cmd, ["/usr/local/bin/freebuff", "--cwd", "/tmp"])
+        self.assertEqual(cmd, [freebuff_bin, "--cwd", "/tmp"])
         self.assertNotIn("Hello Freebuff", cmd)
         self.assertNotIn("--model", cmd)
         self.assertEqual(env.get("FREEBUFF_MODEL"), "MiMo v2.6 Flash Fast")
+
+        # Freebuff headless command building: must use freebuff-headless with -C, -m, and positional prompt
+        cmd_headless, _ = reg.build_command("freebuff", "/tmp", prompt="Hello Freebuff", headless=True, model="mimo")
+        self.assertTrue(cmd_headless[0].endswith("freebuff-headless"))
+        self.assertIn("-C", cmd_headless)
+        self.assertIn("/tmp", cmd_headless)
+        self.assertIn("-m", cmd_headless)
+        self.assertIn("mimo", cmd_headless)
+        self.assertIn("Hello Freebuff", cmd_headless)
 
     def test_state_manager(self):
         mgr = StateManager()

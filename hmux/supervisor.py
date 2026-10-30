@@ -104,7 +104,27 @@ class Supervisor:
             model=effective_model
         )
 
-        # Launch background worker
+        # Pure Zero-PTY headless invocation: execute directly as background process without allocating a PTY
+        if headless:
+            with open(session.log_file, "a", encoding="utf-8") as log_out, \
+                 open(session.log_file + ".err", "a", encoding="utf-8") as log_err:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=worktree_path,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_out,
+                    stderr=log_err,
+                    start_new_session=True,
+                    close_fds=True
+                )
+            session.pid = proc.pid
+            session.metadata["headless"] = True
+            session.metadata["zero_pty"] = True
+            self.state.register(session)
+            return session
+
+        # Launch background worker for interactive PTY sessions
         worker_script = str(Path(__file__).parent / "worker.py")
 
         worker_args = [
@@ -117,15 +137,15 @@ class Supervisor:
         ] + cmd
 
         # Detached process invocation
-        err_file = open(session.log_file + ".err", "w")
-        proc = subprocess.Popen(
-            worker_args,
-            stdin=subprocess.DEVNULL,
-            stdout=err_file,
-            stderr=err_file,
-            start_new_session=True,
-            close_fds=True
-        )
+        with open(session.log_file + ".err", "w") as err_file:
+            proc = subprocess.Popen(
+                worker_args,
+                stdin=subprocess.DEVNULL,
+                stdout=err_file,
+                stderr=err_file,
+                start_new_session=True,
+                close_fds=True
+            )
 
         # Wait briefly for socket and pid
         pid_file = session.socket_path + ".pid"
@@ -147,20 +167,11 @@ class Supervisor:
         if harness.key == "freebuff" and effective_prompt:
             from hmux.freebuff import FreebuffDriver
             driver = FreebuffDriver()
-            if headless:
+            import threading
+            def _bg_inject():
                 if driver.wait_until_ready(session, timeout=25.0):
-                    resp = driver.converse(session, effective_prompt, timeout=90.0)
-                    if resp:
-                        with open(session.log_file, "a", encoding="utf-8") as f:
-                            f.write(f"\n[hmux-freebuff-response]\n{resp}\n")
-                    session.status = "COMPLETED"
-                    self.state.update(session)
-            else:
-                import threading
-                def _bg_inject():
-                    if driver.wait_until_ready(session, timeout=25.0):
-                        driver.send_prompt(session, effective_prompt)
-                threading.Thread(target=_bg_inject, daemon=True).start()
+                    driver.send_prompt(session, effective_prompt)
+            threading.Thread(target=_bg_inject, daemon=True).start()
 
         return session
 
@@ -175,6 +186,11 @@ class Supervisor:
             return
 
         if not os.path.exists(session.socket_path):
+            if session.metadata.get("headless") or session.metadata.get("zero_pty"):
+                print(f"[hmux] Session '{session_id}' is running in Zero-PTY headless mode (no terminal attached).")
+                print(f"  • View logs:    hmux logs {session_id}")
+                print(f"  • Tail output:  tail -f {session.log_file}")
+                return
             if session.metadata.get("ambient"):
                 print(f"[hmux] Session '{session_id}' is an ambient registered session (communicates via hmux talk/inbox).")
                 print(f"  • Send input:  hmux talk {session_id} \"<message>\"")

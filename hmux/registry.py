@@ -38,7 +38,12 @@ HARNESS_DEFAULTS = {
     },
     "freebuff": {
         "aliases": ["freebuff", "manicode"],
-        "paths": ["/usr/local/bin/freebuff", "freebuff"],
+        "paths": [
+            os.path.join(_HOME, ".local/bin/freebuff"),
+            os.path.join(_HOME, ".config/manicode/freebuff"),
+            "/usr/local/bin/freebuff",
+            "freebuff",
+        ],
         "description": "Freebuff coding assistant",
     },
     "claude": {
@@ -441,10 +446,19 @@ class HarnessRegistry:
                 cmd.append(prompt)
 
         elif key == "freebuff":
-            cmd = [harness.binary_path, "--cwd", worktree_dir]
-            if model:
-                env["FREEBUFF_MODEL"] = model
-            cmd.extend(extra)
+            if headless:
+                headless_bin = shutil.which("freebuff-headless") or os.path.join(_HOME, ".local/bin/freebuff-headless")
+                cmd = [headless_bin, "-C", worktree_dir]
+                if model:
+                    cmd.extend(["-m", model])
+                cmd.extend(extra)
+                if prompt:
+                    cmd.append(prompt)
+            else:
+                cmd = [harness.binary_path, "--cwd", worktree_dir]
+                if model:
+                    env["FREEBUFF_MODEL"] = model
+                cmd.extend(extra)
 
         elif key == "antigravity":
             cmd = [harness.binary_path, "--add-dir", worktree_dir]
