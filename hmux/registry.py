@@ -161,7 +161,16 @@ class HarnessRegistry:
             return "flint-free"
 
         if clean in ("antigravity", "agy", "gemini"):
-            return "gemini-2.5-pro"
+            settings_file = home / ".gemini" / "antigravity-cli" / "settings.json"
+            if settings_file.exists():
+                try:
+                    import json
+                    data = json.loads(settings_file.read_text())
+                    if data.get("model"):
+                        return data["model"]
+                except Exception:
+                    pass
+            return "Gemini 3.8 Flash"
 
         if clean in ("opencode", "open-code"):
             return "claude-3-5-sonnet"
