@@ -92,27 +92,59 @@ class MessageRouter:
         except Exception:
             return False
 
-    def list_active_sessions(self, include_opencode: bool = False) -> List[Dict[str, Any]]:
+    def list_active_sessions(self, include_opencode: bool = True) -> List[Dict[str, Any]]:
         """
         List all sessions that can receive messages right now.
-
-        ``include_opencode`` merges live OpenCode sessions discovered in
-        opencode.db. It is opt-in so broadcasts never start unsolicited model
-        turns in every live OpenCode TUI.
+        Combines managed sessions and ambient sessions (Hermes, OpenCode, Antigravity, etc.)
         """
+        from hmux.registry import HarnessRegistry
+        reg = HarnessRegistry()
         sessions = self.state_mgr.list_all(refresh=True)
+        ambient_sessions = self.state_mgr.discover_ambient_sessions(reg)
+
+        combined_map: Dict[str, FleetSession] = {}
+        for s in sessions:
+            if s.is_alive():
+                combined_map[s.session_id] = s
+
+        for amb in ambient_sessions:
+            if not amb.is_alive():
+                continue
+            matched_key = None
+            for sid, s in combined_map.items():
+                if sid == amb.session_id:
+                    matched_key = sid
+                    break
+                amb_nid = amb.metadata.get("native_session_id")
+                s_nid = s.metadata.get("native_session_id")
+                if amb_nid and s_nid and amb_nid == s_nid:
+                    matched_key = sid
+                    break
+
+            if matched_key:
+                existing = combined_map[matched_key]
+                existing.status = "RUNNING"
+                if amb.pid:
+                    existing.pid = amb.pid
+                if amb.model:
+                    existing.model = amb.model
+                if amb.task_name:
+                    existing.task_name = amb.task_name
+            else:
+                combined_map[amb.session_id] = amb
+
         active = []
         seen_ids = set()
         seen_native_ids = set()
-        for s in sessions:
-            if s.status == "RUNNING" and (os.path.exists(s.socket_path) or s.metadata.get("ambient")):
+        for s in combined_map.values():
+            if s.status == "RUNNING" and (os.path.exists(s.socket_path) or s.metadata.get("ambient") or s.is_alive()):
                 active.append({
                     "session_id": s.session_id,
                     "harness": s.harness,
                     "task_name": s.task_name,
                     "branch": s.branch or "main",
                     "status": s.status,
-                    "model": s.model,
+                    "model": s.model or reg.resolve_model(s.harness),
                     "type": "socket" if os.path.exists(s.socket_path) else "mailbox",
                     "socket_path": s.socket_path
                 })
@@ -230,30 +262,57 @@ class MessageRouter:
 
         # Check target session
         target = self.state_mgr.get(to_session)
-        if not target and (to_session.startswith("ses_") or to_session.startswith("local-")):
-            # Check if an existing managed session already maps to this native session ID
+        if not target:
+            # 1. Match against existing managed sessions by native_session_id or prefix
             for s in self.state_mgr.list_all(refresh=False):
-                if s.metadata.get("native_session_id") == to_session:
+                if s.metadata.get("native_session_id") == to_session or s.session_id == to_session:
                     target = s
                     break
 
-        if not target and to_session.startswith("ses_"):
+        if not target:
+            # 2. Check ambient sessions discovered across system
+            from hmux.registry import HarnessRegistry
+            reg = HarnessRegistry()
+            ambient_sessions = self.state_mgr.discover_ambient_sessions(reg)
+            clean_target = to_session.lower().strip()
+            for amb in ambient_sessions:
+                amb_nid = amb.metadata.get("native_session_id")
+                if (
+                    amb.session_id == to_session
+                    or (amb_nid and amb_nid == to_session)
+                    or (amb_nid and amb_nid.endswith(to_session.replace("hermes-", "")))
+                    or amb.harness == clean_target
+                    or (clean_target in ("hermes", "hermes-live") and amb.harness == "hermes")
+                    or (clean_target in ("opencode", "opencode-live") and amb.harness == "opencode")
+                    or (clean_target in ("antigravity", "antigravity-main") and amb.harness == "antigravity")
+                ):
+                    target = amb
+                    try:
+                        self.state_mgr.save(target)
+                    except Exception:
+                        pass
+                    break
+
+        if not target and (to_session.startswith("ses_") or to_session == "opencode"):
             from hmux.opencode import OpenCodeDriver
+            from hmux.registry import HarnessRegistry
             driver = OpenCodeDriver()
-            info = driver.get_session_info(to_session)
+            info = driver.get_session_info(to_session) if to_session.startswith("ses_") else None
+            if not info:
+                sessions = driver.list_sessions(limit=1, live_only=True)
+                if sessions:
+                    info = driver.get_session_info(sessions[0]["session_id"])
             if info:
-                model_name = info["model"]
-                if not model_name:
-                    from hmux.registry import HarnessRegistry
-                    model_name = HarnessRegistry().resolve_model("opencode")
+                model_name = info["model"] or HarnessRegistry().resolve_model("opencode")
                 target = FleetSession(
-                    session_id=to_session,
+                    session_id=info["session_id"],
                     harness="opencode",
                     task_name=info["title"] or "OpenCode Chat",
                     prompt="",
                     worktree_path=info["directory"] or os.getcwd(),
-                    status="COMPLETED",
+                    status="RUNNING",
                     metadata={
+                        "ambient": True,
                         "native_session_id": info["session_id"],
                         "opencode_db": True,
                     },
@@ -261,8 +320,9 @@ class MessageRouter:
                 )
                 self.state_mgr.register(target)
 
-        if not target and to_session.startswith("local-"):
+        if not target and (to_session.startswith("local-") or to_session.startswith("hermes")):
             from hmux.hermes import HermesDriver
+            from hmux.registry import HarnessRegistry
             driver = HermesDriver()
             db_path = driver.get_db_path()
             if db_path.exists():
@@ -270,22 +330,35 @@ class MessageRouter:
                     import sqlite3
                     conn = sqlite3.connect(db_path)
                     c = conn.cursor()
-                    c.execute("SELECT id, title, model, cwd FROM sessions WHERE id = ? LIMIT 1;", (to_session,))
-                    row = c.fetchone()
+                    if to_session.startswith("local-"):
+                        c.execute("SELECT id, title, model, cwd FROM sessions WHERE id = ? LIMIT 1;", (to_session,))
+                        row = c.fetchone()
+                    elif to_session.startswith("hermes-"):
+                        suffix = to_session[len("hermes-"):]
+                        c.execute("SELECT id, title, model, cwd FROM sessions WHERE id LIKE ? ORDER BY started_at DESC LIMIT 1;", (f"%{suffix}",))
+                        row = c.fetchone()
+                    else:
+                        try:
+                            c.execute("SELECT id, title, model, cwd FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1;")
+                            row = c.fetchone()
+                        except Exception:
+                            row = None
+                        if not row:
+                            c.execute("SELECT id, title, model, cwd FROM sessions ORDER BY started_at DESC LIMIT 1;")
+                            row = c.fetchone()
                     conn.close()
                     if row:
-                        model_name = row[2] or driver.get_session_model(row[0])
-                        if not model_name:
-                            from hmux.registry import HarnessRegistry
-                            model_name = HarnessRegistry().resolve_model("hermes")
+                        from hmux.registry import HarnessRegistry
+                        model_name = row[2] or driver.get_session_model(row[0]) or HarnessRegistry().resolve_model("hermes")
+                        s_id = to_session if (to_session.startswith("local-") or to_session.startswith("hermes-")) else (f"hermes-{row[0][-6:]}" if len(row[0]) > 12 else row[0])
                         target = FleetSession(
-                            session_id=to_session,
+                            session_id=s_id,
                             harness="hermes",
                             task_name=row[1] or "Hermes Chat",
                             prompt="",
                             worktree_path=row[3] or os.getcwd(),
-                            status="COMPLETED",
-                            metadata={"native_session_id": row[0]},
+                            status="RUNNING",
+                            metadata={"ambient": True, "native_session_id": row[0]},
                             model=model_name
                         )
                         self.state_mgr.register(target)

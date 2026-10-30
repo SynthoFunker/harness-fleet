@@ -132,12 +132,17 @@ class SessionCatalog:
                 if harness_filter:
                     all_raw = [s for s in all_raw if s["harness"] == harness_filter]
 
-                # Find live sessions to cross-reference
-                live_sessions = {
-                    s.session_id: s
-                    for s in self.state_mgr.list_all(refresh=True)
-                    if s.status == "RUNNING"
-                }
+                # Find live sessions to cross-reference (including ambient sessions)
+                from hmux.registry import HarnessRegistry
+                ambient_live = self.state_mgr.discover_ambient_sessions(HarnessRegistry())
+                managed_live = [s for s in self.state_mgr.list_all(refresh=True) if s.status == "RUNNING"]
+                live_ids = set()
+                for s in managed_live + ambient_live:
+                    if s.is_alive():
+                        live_ids.add(s.session_id)
+                        nid = s.metadata.get("native_session_id")
+                        if nid:
+                            live_ids.add(nid)
 
                 for item in all_raw[:max(limit, 20)]:
                     h = item["harness"]
@@ -177,8 +182,8 @@ class SessionCatalog:
                     except Exception:
                         title = "Session (unparsed)"
 
-                    is_live = sid in live_sessions or any(
-                        sid in s_id for s_id in live_sessions
+                    is_live = sid in live_ids or any(
+                        sid in s_id or s_id in sid for s_id in live_ids
                     )
 
                     entries.append({

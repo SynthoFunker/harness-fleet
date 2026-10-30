@@ -52,6 +52,38 @@ class HermesDriver:
         if session.session_id.startswith("local-"):
             return session.session_id
 
+        db_path = self.get_db_path()
+
+        # 3. Check if session_id matches suffix of a native id (e.g. hermes-14c226)
+        if session.session_id.startswith("hermes-") and db_path.exists():
+            suffix = session.session_id[len("hermes-"):]
+            try:
+                conn = sqlite3.connect(db_path)
+                c = conn.cursor()
+                c.execute("SELECT id FROM sessions WHERE id LIKE ? ORDER BY started_at DESC LIMIT 1;", (f"%{suffix}",))
+                row = c.fetchone()
+                conn.close()
+                if row:
+                    return row[0]
+            except Exception:
+                pass
+
+        # 4. If session_id is generic "hermes" or "hermes-live", pick the latest session
+        if session.session_id in ("hermes", "hermes-live") and db_path.exists():
+            try:
+                conn = sqlite3.connect(db_path)
+                c = conn.cursor()
+                c.execute("SELECT id FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1;")
+                row = c.fetchone()
+                if not row:
+                    c.execute("SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1;")
+                    row = c.fetchone()
+                conn.close()
+                if row:
+                    return row[0]
+            except Exception:
+                pass
+
         # 3. Check session log file for printed session_id
         if session.log_file and os.path.exists(session.log_file):
             try:
