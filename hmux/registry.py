@@ -127,8 +127,8 @@ class HarnessRegistry:
 
     def resolve_model(self, harness_key: str, explicit_model: Optional[str] = None) -> str:
         """
-        Determine the real active AI model name for a harness, resolving explicit flags
-        or falling back to the harness's local user configuration files.
+        Determine the real active AI model name for a harness, resolving explicit flags,
+        environment variables, or dynamic configuration files (YAML, TOML, JSON).
         """
         if explicit_model:
             return explicit_model
@@ -136,6 +136,20 @@ class HarnessRegistry:
         clean = (harness_key or "").strip().lower()
         home = Path.home()
 
+        # 1. Google Antigravity
+        if clean in ("antigravity", "agy", "gemini"):
+            for p in [home / ".gemini" / "antigravity-cli" / "settings.json", home / ".gemini" / "settings.json"]:
+                if p.exists():
+                    try:
+                        import json
+                        data = json.loads(p.read_text())
+                        if data.get("model"):
+                            return data["model"]
+                    except Exception:
+                        pass
+            return os.environ.get("ANTIGRAVITY_MODEL") or os.environ.get("GEMINI_MODEL") or "Gemini 3.8 Flash"
+
+        # 2. Codex
         if clean in ("codex",):
             config_file = home / ".codex" / "config.toml"
             if config_file.exists():
@@ -146,43 +160,99 @@ class HarnessRegistry:
                         return m.group(1)
                 except Exception:
                     pass
-            return "gpt-4o"
+            return os.environ.get("CODEX_MODEL") or "gpt-4o"
 
+        # 3. Pi Agent
         if clean in ("pi", "pi-coding-agent"):
-            settings_file = home / ".pi" / "agent" / "settings.json"
-            if settings_file.exists():
-                try:
-                    import json
-                    data = json.loads(settings_file.read_text())
-                    if data.get("defaultModel"):
-                        return data["defaultModel"]
-                except Exception:
-                    pass
-            return "flint-free"
+            for p in [home / ".pi" / "agent" / "settings.json", home / ".pi" / "agent" / "config.json"]:
+                if p.exists():
+                    try:
+                        import json
+                        data = json.loads(p.read_text())
+                        if data.get("defaultModel"):
+                            return data["defaultModel"]
+                        if data.get("model"):
+                            return data["model"]
+                    except Exception:
+                        pass
+            return os.environ.get("PI_MODEL") or "flint-free"
 
-        if clean in ("antigravity", "agy", "gemini"):
-            settings_file = home / ".gemini" / "antigravity-cli" / "settings.json"
-            if settings_file.exists():
-                try:
-                    import json
-                    data = json.loads(settings_file.read_text())
-                    if data.get("model"):
-                        return data["model"]
-                except Exception:
-                    pass
-            return "Gemini 3.8 Flash"
-
-        if clean in ("opencode", "open-code"):
-            return "claude-3-5-sonnet"
-
+        # 4. Hermes Agent
         if clean in ("hermes",):
-            return "hermes-3-70b"
+            config_yaml = home / ".hermes" / "config.yaml"
+            if config_yaml.exists():
+                try:
+                    import re
+                    # Match model block default or model setting
+                    m = re.search(r'^\s*(?:default|model)\s*:\s*["\']([^"\']+)["\']', config_yaml.read_text(), re.M)
+                    if m:
+                        return m.group(1)
+                except Exception:
+                    pass
+            env_file = home / ".hermes" / ".env"
+            if env_file.exists():
+                try:
+                    import re
+                    m = re.search(r'^\s*MODEL\s*=\s*["\']?([^"\'\s]+)', env_file.read_text(), re.M)
+                    if m:
+                        return m.group(1)
+                except Exception:
+                    pass
+            return os.environ.get("HERMES_MODEL") or "hermes-3-70b"
 
+        # 5. OpenCode
+        if clean in ("opencode", "open-code"):
+            for p in [home / ".config" / "opencode" / "opencode.json", home / ".opencode" / "opencode.json", home / ".config" / "opencode" / "config.json"]:
+                if p.exists():
+                    try:
+                        import json
+                        data = json.loads(p.read_text())
+                        if data.get("model"):
+                            return data["model"]
+                        if data.get("defaultModel"):
+                            return data["defaultModel"]
+                    except Exception:
+                        pass
+            return os.environ.get("OPENCODE_MODEL") or "claude-3-5-sonnet"
+
+        # 6. Claude Code
         if clean in ("claude", "claude-code"):
-            return "claude-3-5-sonnet"
+            for p in [home / ".claude.json", home / ".config" / "claude" / "config.json"]:
+                if p.exists():
+                    try:
+                        import json
+                        data = json.loads(p.read_text())
+                        if data.get("model"):
+                            return data["model"]
+                    except Exception:
+                        pass
+            return os.environ.get("ANTHROPIC_MODEL") or os.environ.get("CLAUDE_MODEL") or "claude-3-5-sonnet"
 
+        # 7. Aider
         if clean in ("aider",):
-            return "gpt-4o"
+            for p in [home / ".aider.conf.yml", Path(".aider.conf.yml")]:
+                if p.exists():
+                    try:
+                        import re
+                        m = re.search(r'^\s*model\s*:\s*["\']?([^"\'\s]+)', p.read_text(), re.M)
+                        if m:
+                            return m.group(1)
+                    except Exception:
+                        pass
+            return os.environ.get("AIDER_MODEL") or "gpt-4o"
+
+        # 8. Freebuff
+        if clean in ("freebuff", "manicode"):
+            for p in [home / ".freebuff" / "config.json", home / ".freebuff" / "settings.json"]:
+                if p.exists():
+                    try:
+                        import json
+                        data = json.loads(p.read_text())
+                        if data.get("model"):
+                            return data["model"]
+                    except Exception:
+                        pass
+            return os.environ.get("FREEBUFF_MODEL") or "standard"
 
         return "standard"
 
