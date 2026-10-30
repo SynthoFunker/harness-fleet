@@ -81,10 +81,9 @@ class TestHMUX(unittest.TestCase):
         self.assertNotIn("--model", cmd)
         self.assertEqual(env.get("FREEBUFF_MODEL"), "MiMo v2.6 Flash Fast")
 
-        # Freebuff command building: both interactive and headless must use the official binary without unapproved CLI flags
-        cmd_headless, env_headless = reg.build_command("freebuff", "/tmp", prompt="Hello Freebuff", headless=True, model="MiMo v2.6 Flash Fast")
-        self.assertEqual(cmd_headless, [freebuff_bin, "--cwd", "/tmp"])
-        self.assertEqual(env_headless.get("FREEBUFF_MODEL"), "MiMo v2.6 Flash Fast")
+        # Freebuff headless mode is disabled to protect against ban/suspension
+        with self.assertRaises(ValueError):
+            reg.build_command("freebuff", "/tmp", prompt="Hello Freebuff", headless=True, model="MiMo v2.6 Flash Fast")
 
     def test_state_manager(self):
         mgr = StateManager()

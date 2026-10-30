@@ -15,16 +15,48 @@ from hmux.state import StateManager
 class TestFreebuffDriverAndHeadless(unittest.TestCase):
     def setUp(self):
         self.registry = HarnessRegistry()
+        if "freebuff" not in self.registry._installed:
+            self.registry._installed["freebuff"] = HarnessInfo(
+                "freebuff", "freebuff", "/mock/bin/freebuff", "Mock Freebuff"
+            )
+        if "codex" not in self.registry._installed:
+            self.registry._installed["codex"] = HarnessInfo(
+                "codex", "codex", "/mock/bin/codex", "Mock Codex"
+            )
         self.state = StateManager()
 
+    def test_freebuff_headless_mode_is_disabled(self):
+        # Attempting to build command or spawn Freebuff in headless mode must raise ValueError
+        # to prevent account suspensions/bans from Freebuff's backend
+        with self.assertRaises(ValueError) as cm_build:
+            self.registry.build_command(
+                harness_name="freebuff",
+                worktree_dir="/tmp/test_dir",
+                prompt="Analyze codebase",
+                headless=True,
+                model="MiMo v2.6 Flash Fast"
+            )
+        self.assertIn("Headless mode is disabled for Freebuff", str(cm_build.exception))
+
+        sup = Supervisor(registry=self.registry, state=self.state)
+        with self.assertRaises(ValueError) as cm_spawn:
+            sup.spawn(
+                harness_name="freebuff",
+                task_name="test-freebuff-blocked",
+                prompt="Analyze codebase",
+                headless=True,
+                use_worktree=False
+            )
+        self.assertIn("Headless mode is disabled for Freebuff", str(cm_spawn.exception))
+
     def test_freebuff_official_binary_command_building(self):
-        # Both interactive and headless must use the official binary with --cwd
+        # Freebuff interactive command must use the official binary with --cwd
         # and env-based model selection to avoid anti-proxy client suspensions.
         cmd, env = self.registry.build_command(
             harness_name="freebuff",
             worktree_dir="/tmp/test_dir",
             prompt="Analyze codebase",
-            headless=True,
+            headless=False,
             model="MiMo v2.6 Flash Fast"
         )
         self.assertTrue(cmd[0].endswith("freebuff"))
@@ -41,7 +73,7 @@ class TestFreebuffDriverAndHeadless(unittest.TestCase):
         mock_proc.pid = 88888
         mock_popen.return_value = mock_proc
 
-        sup = Supervisor()
+        sup = Supervisor(registry=self.registry, state=self.state)
         session = sup.spawn(
             harness_name="codex",
             task_name="test-codex-headless",
@@ -69,12 +101,12 @@ class TestFreebuffDriverAndHeadless(unittest.TestCase):
         mock_proc.pid = 99999
         mock_popen.return_value = mock_proc
 
-        sup = Supervisor()
+        sup = Supervisor(registry=self.registry, state=self.state)
         session = sup.spawn(
             harness_name="freebuff",
             task_name="test-freebuff-pty",
             prompt="Execute coding task",
-            headless=True,
+            headless=False,
             use_worktree=False
         )
 

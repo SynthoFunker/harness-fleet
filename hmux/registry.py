@@ -446,6 +446,11 @@ class HarnessRegistry:
                 cmd.append(prompt)
 
         elif key == "freebuff":
+            if headless:
+                raise ValueError(
+                    "Headless mode is disabled for Freebuff: Freebuff's backend policies prohibit "
+                    "headless/non-interactive automation and ban detected accounts. Freebuff must be run interactively."
+                )
             # Freebuff official binary is a TUI that must run legitimately in a PTY
             # to comply with Freebuff's anti-proxy terms and render its native ad loop.
             cmd = [harness.binary_path, "--cwd", worktree_dir]

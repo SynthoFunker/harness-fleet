@@ -23,9 +23,9 @@ from hmux.worktree import WorktreeManager
 from hmux.handover import HandoverEngine
 
 class Supervisor:
-    def __init__(self):
-        self.state = StateManager()
-        self.registry = HarnessRegistry()
+    def __init__(self, registry: Optional[HarnessRegistry] = None, state: Optional[StateManager] = None):
+        self.state = state or StateManager()
+        self.registry = registry or HarnessRegistry()
         self.handover = HandoverEngine()
 
     def spawn(
@@ -48,6 +48,13 @@ class Supervisor:
         harness = self.registry.get(harness_name)
         if not harness:
             raise ValueError(f"Harness '{harness_name}' is not recognized or not installed.")
+
+        # Freebuff policy check: Headless mode causes account suspensions/bans from Freebuff's backend
+        if harness.key == "freebuff" and headless:
+            raise ValueError(
+                "Headless mode is disabled for Freebuff: Freebuff's backend policies prohibit "
+                "headless/non-interactive automation and ban detected accounts. Freebuff must be run interactively."
+            )
 
         # Determine task/branch name
         effective_task = task_name or f"{harness.key}-{int(time.time())}"
@@ -168,23 +175,11 @@ class Supervisor:
         if harness.key == "freebuff" and effective_prompt:
             from hmux.freebuff import FreebuffDriver
             driver = FreebuffDriver()
-            if headless:
-                import threading
-                def _bg_headless_converse():
-                    if driver.wait_until_ready(session, timeout=25.0):
-                        resp = driver.converse(session, effective_prompt, timeout=120.0)
-                        if resp:
-                            with open(session.log_file, "a", encoding="utf-8") as f:
-                                f.write(f"\n[hmux-freebuff-response]\n{resp}\n")
-                        session.status = "COMPLETED"
-                        self.state.update(session)
-                threading.Thread(target=_bg_headless_converse, daemon=True).start()
-            else:
-                import threading
-                def _bg_inject():
-                    if driver.wait_until_ready(session, timeout=25.0):
-                        driver.send_prompt(session, effective_prompt)
-                threading.Thread(target=_bg_inject, daemon=True).start()
+            import threading
+            def _bg_inject():
+                if driver.wait_until_ready(session, timeout=25.0):
+                    driver.send_prompt(session, effective_prompt)
+            threading.Thread(target=_bg_inject, daemon=True).start()
 
         return session
 
