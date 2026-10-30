@@ -67,6 +67,29 @@ class TestOpenCodeDriver(unittest.TestCase):
                 resp_same = self.driver.extract_latest_response("ses_test", initial_msg_id="msg_001")
                 self.assertIsNone(resp_same)
 
+    def test_dynamic_session_model_detection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "opencode.db"
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE session_v2 (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    model TEXT
+                );
+            """)
+            c.execute(
+                "INSERT INTO session_v2 VALUES (?, ?, ?);",
+                ("ses_dyn_1", "Test", json.dumps({"id": "claude-3-5-sonnet", "providerID": "anthropic"}))
+            )
+            conn.commit()
+            conn.close()
+
+            with patch.object(self.driver, "get_db_path", return_value=db_path):
+                detected = self.driver.get_session_model("ses_dyn_1")
+                self.assertEqual(detected, "anthropic/claude-3-5-sonnet")
+
     @patch("subprocess.run")
     def test_router_talk_to_opencode(self, mock_run):
         mock_proc = MagicMock()

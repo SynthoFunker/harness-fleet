@@ -207,19 +207,25 @@ class HarnessRegistry:
 
         # 5. OpenCode
         if clean in ("opencode", "open-code"):
-            # Check SQLite database for recent active model
+            # Check SQLite database for recent active model in session_v2 or session_message
             db_path = home / ".local" / "share" / "opencode" / "opencode.db"
             if db_path.exists():
                 try:
                     import sqlite3, json
                     con = sqlite3.connect(str(db_path))
                     cur = con.cursor()
-                    rows = cur.execute("SELECT data FROM session_message ORDER BY id DESC LIMIT 20;").fetchall()
+                    rows = cur.execute("SELECT model FROM session_v2 WHERE model IS NOT NULL ORDER BY time_updated DESC LIMIT 5;").fetchall()
                     con.close()
                     for r in rows:
-                        d = json.loads(r[0])
-                        if "model" in d and isinstance(d["model"], dict) and d["model"].get("id"):
-                            return d["model"]["id"]
+                        raw = r[0]
+                        if raw and raw.startswith("{"):
+                            d = json.loads(raw)
+                            prov = d.get("providerID")
+                            mid = d.get("id")
+                            if mid:
+                                return f"{prov}/{mid}" if prov and not mid.startswith(f"{prov}/") else mid
+                        elif raw:
+                            return raw
                 except Exception:
                     pass
 
@@ -234,7 +240,7 @@ class HarnessRegistry:
                             return data["defaultModel"]
                     except Exception:
                         pass
-            return os.environ.get("OPENCODE_MODEL") or "deepseek-v4.1-flash-free"
+            return os.environ.get("OPENCODE_MODEL") or "opencode/deepseek-v4.1-flash-free"
 
         # 6. Claude Code
         if clean in ("claude", "claude-code"):

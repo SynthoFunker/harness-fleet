@@ -210,12 +210,10 @@ class MessageRouter:
                     row = c.fetchone()
                     conn.close()
                     if row:
-                        model_name = "opencode/deepseek-v4.1-flash-free"
-                        if row[2] and "{" in row[2]:
-                            try:
-                                model_name = json.loads(row[2]).get("id", model_name)
-                            except Exception:
-                                pass
+                        model_name = driver.get_session_model(row[0])
+                        if not model_name:
+                            from hmux.registry import HarnessRegistry
+                            model_name = HarnessRegistry().resolve_model("opencode")
                         target = FleetSession(
                             session_id=to_session,
                             harness="opencode",

@@ -140,6 +140,30 @@ class OpenCodeDriver:
 
         return None
 
+    def get_session_model(self, native_session_id: str) -> Optional[str]:
+        """Dynamically retrieve the model configured for a native OpenCode session."""
+        db_path = self.get_db_path()
+        if not db_path.exists():
+            return None
+        try:
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute("SELECT model FROM session_v2 WHERE id = ? LIMIT 1;", (native_session_id,))
+            row = c.fetchone()
+            conn.close()
+            if row and row[0]:
+                raw = row[0]
+                if raw.startswith("{"):
+                    d = json.loads(raw)
+                    prov = d.get("providerID")
+                    mid = d.get("id")
+                    if mid:
+                        return f"{prov}/{mid}" if prov and not mid.startswith(f"{prov}/") else mid
+                return raw
+        except Exception:
+            pass
+        return None
+
     def converse(
         self,
         session: FleetSession,
@@ -152,10 +176,18 @@ class OpenCodeDriver:
         native_id = self.resolve_native_session_id(session)
         initial_msg_id = self.get_latest_message_id(native_id) if native_id else None
 
-        bin_path = self.get_binary_path()
-        model = session.model or "opencode/deepseek-v4.1-flash-free"
+        # Dynamically determine model from session, native db, or system registry
+        model = session.model
+        if not model and native_id:
+            model = self.get_session_model(native_id)
+        if not model:
+            from hmux.registry import HarnessRegistry
+            model = HarnessRegistry().resolve_model("opencode")
 
-        cmd = [bin_path, "run", "--standalone", "-m", model]
+        bin_path = self.get_binary_path()
+        cmd = [bin_path, "run", "--standalone"]
+        if model:
+            cmd.extend(["-m", model])
         if native_id:
             cmd.extend(["-s", native_id])
         cmd.append(prompt)
