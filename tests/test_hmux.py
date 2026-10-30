@@ -34,18 +34,41 @@ class TestHMUX(unittest.TestCase):
 
     def test_command_building(self):
         reg = HarnessRegistry()
-        # Ensure codex and hermes exist in registry for test (mocked if not installed on runner)
+        # Ensure harnesses exist in registry for test (mocked if not installed on runner)
         if "codex" not in reg._installed:
             reg._installed["codex"] = HarnessInfo("codex", "codex", "/mock/bin/codex", "Mock Codex")
         if "hermes" not in reg._installed:
             reg._installed["hermes"] = HarnessInfo("hermes", "hermes", "/mock/bin/hermes", "Mock Hermes")
+        if "pi" not in reg._installed:
+            reg._installed["pi"] = HarnessInfo("pi", "pi", "/mock/bin/pi", "Mock Pi")
+        if "opencode" not in reg._installed:
+            reg._installed["opencode"] = HarnessInfo("opencode", "opencode", "/mock/bin/opencode", "Mock OpenCode")
 
-        cmd, env = reg.build_command("codex", "/tmp", prompt="Hello Codex", headless=True)
+        # Codex headless with explicit model
+        cmd, env = reg.build_command("codex", "/tmp", prompt="Hello Codex", headless=True, model="o3-mini")
         self.assertIn("exec", cmd)
+        self.assertIn("-m", cmd)
+        self.assertIn("o3-mini", cmd)
         self.assertIn("Hello Codex", cmd)
 
-        cmd, env = reg.build_command("hermes", "/tmp", prompt="Hello Hermes")
+        # Pi headless with explicit model
+        cmd, env = reg.build_command("pi", "/tmp", prompt="Run tests", headless=True, model="claude-3-5-sonnet")
+        self.assertIn("-p", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("claude-3-5-sonnet", cmd)
+        self.assertIn("Run tests", cmd)
+
+        # OpenCode headless with explicit model
+        cmd, env = reg.build_command("opencode", "/tmp", prompt="Fix issue", headless=True, model="gpt-4o")
+        self.assertIn("run", cmd)
+        self.assertIn("-m", cmd)
+        self.assertIn("gpt-4o", cmd)
+
+        # Hermes interactive with model
+        cmd, env = reg.build_command("hermes", "/tmp", prompt="Hello Hermes", model="hermes-3-70b")
         self.assertIn("--in", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("hermes-3-70b", cmd)
         self.assertIn("-z", cmd)
 
     def test_state_manager(self):

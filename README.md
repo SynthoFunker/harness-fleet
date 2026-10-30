@@ -119,8 +119,8 @@ hmux spawn --harness codex --task jwt-fix --prompt "Implement JWT rotation"
 # Attach interactively to an agent terminal (Press Ctrl-] to detach)
 hmux attach codex-jwt-fix
 
-# Run a non-interactive one-shot task (auto-exits when complete)
-hmux spawn --harness pi --task lint-check --prompt "Run lint checks" --headless
+# Run a non-interactive one-shot task with a specific model (auto-exits when complete)
+hmux spawn --harness pi --model claude-3-5-sonnet --task lint-check --prompt "Run lint checks" --headless
 
 # Inspect what the agent modified in its worktree
 hmux diff codex-jwt-fix
