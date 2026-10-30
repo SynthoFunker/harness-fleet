@@ -8,6 +8,7 @@ import json
 import uuid
 import time
 import socket
+import sqlite3
 import psutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,9 +55,7 @@ class FleetSession:
         self.model = model
 
     def is_alive(self) -> bool:
-        if not self.pid:
-            return False
-        # Check if Unix domain socket is active and accepting connections
+        # 1. Check if Unix domain socket is active and accepting connections
         if self.socket_path and os.path.exists(self.socket_path):
             try:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -66,25 +65,71 @@ class FleetSession:
                 return True
             except Exception:
                 pass
-        try:
-            p = psutil.Process(self.pid)
-            if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
-                return False
-            # Verify the process belongs to this session or harness to guard against OS PID recycling
-            cmd = " ".join(p.cmdline()).lower()
-            name = p.name().lower()
-            if self.metadata.get("ambient"):
-                from hmux.registry import HarnessRegistry
-                return bool(HarnessRegistry().match_process(name, p.cmdline()))
-            if self.session_id.lower() in cmd:
-                return True
-            from hmux.registry import HarnessRegistry
-            matched = HarnessRegistry().match_process(name, p.cmdline())
-            if matched == self.harness:
-                return True
-            return False
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return False
+
+        from hmux.registry import HarnessRegistry
+        reg = HarnessRegistry()
+
+        # 2. Check PID directly if available
+        if self.pid:
+            try:
+                p = psutil.Process(self.pid)
+                if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
+                    name = p.name().lower()
+                    if self.metadata.get("ambient"):
+                        matched = reg.match_process(name, p.cmdline())
+                        if matched == self.harness:
+                            return True
+                    else:
+                        cmd = " ".join(p.cmdline()).lower()
+                        if self.session_id.lower() in cmd:
+                            return True
+                        matched = reg.match_process(name, p.cmdline())
+                        if matched == self.harness:
+                            return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # 3. Fallback for ambient sessions (PID difference across container/sandbox namespaces or PID recycled)
+        if self.metadata.get("ambient"):
+            # Check current process list for harness match
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    p_name = proc.info['name'] or ''
+                    p_cmd = proc.info['cmdline'] or []
+                    if reg.match_process(p_name, p_cmd) == self.harness:
+                        self.pid = proc.info['pid']
+                        return True
+                except Exception:
+                    continue
+
+            # Ambient harness-specific active indicators (e.g. within isolated container PID namespaces)
+            if self.harness == "hermes":
+                hermes_active = Path.home() / ".hermes" / "runtime" / "active_sessions.json"
+                if hermes_active.exists():
+                    try:
+                        data = json.loads(hermes_active.read_text())
+                        if data.get("entries"):
+                            return True
+                    except Exception:
+                        pass
+            elif self.harness == "opencode":
+                opencode_db = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+                if opencode_db.exists():
+                    try:
+                        con = sqlite3.connect(opencode_db)
+                        cur = con.cursor()
+                        cur.execute("SELECT time_updated FROM session_v2 WHERE COALESCE(time_archived, 0) = 0 ORDER BY time_updated DESC LIMIT 1;")
+                        row = cur.fetchone()
+                        con.close()
+                        if row and (int(time.time() * 1000) - row[0]) < 14400000:
+                            return True
+                    except Exception:
+                        pass
+            elif self.harness == "antigravity":
+                if os.environ.get("ANTIGRAVITY_SESSION_ID") or (Path.home() / ".gemini" / "antigravity-cli").exists():
+                    return True
+
+        return False
 
     def update_status(self) -> None:
         """Refresh status based on OS process state."""
@@ -94,7 +139,7 @@ class FleetSession:
                 self.status = "COMPLETED"
                 if not self.end_time:
                     self.end_time = datetime.now(timezone.utc).isoformat()
-        elif self.status == "COMPLETED" and self.is_alive():
+        elif self.status in ("COMPLETED", "STOPPED") and self.is_alive():
             self.status = "RUNNING"
             self.end_time = None
 
@@ -287,3 +332,173 @@ class StateManager:
                 continue
 
         return external
+
+    def discover_ambient_sessions(self, registry=None) -> List[FleetSession]:
+        """
+        Discover active ambient harness sessions running natively in the workspace
+        (e.g. Antigravity CLI, Hermes TUI/daemon, OpenCode service/CLI) that may
+        not have been started via 'hmux spawn'.
+        """
+        import sqlite3
+        if registry is None:
+            from hmux.registry import HarnessRegistry
+            registry = HarnessRegistry()
+
+        ambient_sessions: List[FleetSession] = []
+        seen_harnesses = set()
+
+        # 1. Antigravity: Check if running
+        is_agy_running = False
+        agy_pid = None
+        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                name = p.info['name'] or ""
+                cmdline = p.info['cmdline'] or []
+                if registry.match_process(name, cmdline) == "antigravity":
+                    is_agy_running = True
+                    agy_pid = p.info['pid']
+                    break
+            except Exception:
+                continue
+
+        if is_agy_running:
+            agy_model = registry.resolve_model("antigravity")
+            ambient_sessions.append(FleetSession(
+                session_id="antigravity-main",
+                harness="antigravity",
+                task_name="Fleet Orchestration & Pair Programming",
+                prompt="",
+                worktree_path=os.getcwd(),
+                pid=agy_pid or os.getpid(),
+                status="RUNNING",
+                metadata={"ambient": True},
+                model=agy_model
+            ))
+            seen_harnesses.add("antigravity")
+
+        # 2. Hermes: Check active session lease in ~/.hermes/runtime/active_sessions.json or state.db
+        hermes_active_file = Path.home() / ".hermes" / "runtime" / "active_sessions.json"
+        hermes_db = Path.home() / ".hermes" / "state.db"
+        if hermes_active_file.exists() or hermes_db.exists():
+            try:
+                hermes_pid = None
+                hermes_sid = None
+                start_iso = None
+                if hermes_active_file.exists():
+                    h_data = json.loads(hermes_active_file.read_text())
+                    entries = h_data.get("entries", [])
+                    if entries:
+                        hermes_pid = entries[0].get("pid")
+                        hermes_sid = entries[0].get("session_id")
+                        ts = entries[0].get("started_at")
+                        if ts:
+                            start_iso = datetime.fromtimestamp(ts, timezone.utc).isoformat()
+
+                if hermes_db.exists():
+                    con = sqlite3.connect(hermes_db)
+                    cur = con.cursor()
+                    if hermes_sid:
+                        cur.execute("SELECT id, title, model, cwd, started_at FROM sessions WHERE id = ? LIMIT 1;", (hermes_sid,))
+                        h_row = cur.fetchone()
+                    else:
+                        h_row = None
+                    if not h_row:
+                        cur.execute("SELECT id, title, model, cwd, started_at FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1;")
+                        h_row = cur.fetchone()
+                    con.close()
+
+                    if h_row:
+                        native_id = h_row[0]
+                        title = h_row[1] or "Hermes Interactive Chat"
+                        model = h_row[2] or registry.resolve_model("hermes")
+                        cwd = h_row[3] or str(Path.home())
+                        if not start_iso and h_row[4]:
+                            start_iso = datetime.fromtimestamp(h_row[4], timezone.utc).isoformat()
+                        s_id = f"hermes-{native_id[-6:]}" if len(native_id) > 12 else native_id
+                        ambient_sessions.append(FleetSession(
+                            session_id=s_id,
+                            harness="hermes",
+                            task_name=title,
+                            prompt="",
+                            worktree_path=cwd,
+                            pid=hermes_pid,
+                            status="RUNNING",
+                            start_time=start_iso,
+                            metadata={"ambient": True, "native_session_id": native_id},
+                            model=model
+                        ))
+                        seen_harnesses.add("hermes")
+            except Exception:
+                pass
+
+        # 3. OpenCode: Check live sessions in ~/.local/share/opencode/opencode.db or running processes
+        opencode_db = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+        if opencode_db.exists():
+            try:
+                con = sqlite3.connect(opencode_db)
+                cur = con.cursor()
+                cur.execute(
+                    """
+                    SELECT id, title, directory, model, time_updated, time_created
+                    FROM session_v2
+                    WHERE COALESCE(time_archived, 0) = 0
+                    ORDER BY time_updated DESC
+                    LIMIT 1;
+                    """
+                )
+                row = cur.fetchone()
+                con.close()
+                if row:
+                    time_updated = row[4]
+                    now_ms = int(time.time() * 1000)
+                    if (now_ms - time_updated) < 14400000:
+                        from hmux.opencode import parse_model
+                        sid = row[0]
+                        title = row[1] or "OpenCode Interactive"
+                        directory = row[2] or str(Path.home())
+                        model = parse_model(row[3]) or registry.resolve_model("opencode")
+                        start_iso = datetime.fromtimestamp(row[5] / 1000, timezone.utc).isoformat() if row[5] else None
+                        oc_pid = None
+                        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+                            try:
+                                if registry.match_process(p.info['name'] or '', p.info['cmdline'] or []) == 'opencode':
+                                    oc_pid = p.info['pid']
+                                    break
+                            except Exception:
+                                continue
+                        ambient_sessions.append(FleetSession(
+                            session_id=sid,
+                            harness="opencode",
+                            task_name=title,
+                            prompt="",
+                            worktree_path=directory,
+                            pid=oc_pid,
+                            status="RUNNING",
+                            start_time=start_iso,
+                            metadata={"ambient": True, "native_session_id": sid},
+                            model=model
+                        ))
+                        seen_harnesses.add("opencode")
+            except Exception:
+                pass
+
+        # 4. Any other running harnesses detected via OS processes (e.g. Codex, Pi, Freebuff)
+        externals = self.discover_external_harnesses(registry)
+        for ext in externals:
+            if ext.harness not in seen_harnesses:
+                ext_model = registry.resolve_model(ext.harness)
+                ambient_sessions.append(FleetSession(
+                    session_id=f"{ext.harness}-live",
+                    harness=ext.harness,
+                    task_name=f"{ext.harness.capitalize()} Process",
+                    prompt="",
+                    worktree_path=ext.cwd,
+                    pid=ext.pid,
+                    status="RUNNING",
+                    start_time=ext.create_time,
+                    metadata={"ambient": True},
+                    model=ext_model
+                ))
+                seen_harnesses.add(ext.harness)
+
+        return ambient_sessions

@@ -385,6 +385,12 @@ class HarnessRegistry:
                     return canonical
 
         # 3. Path-specific signature matching for multi-token / packaged harnesses
+        cmd_str = " ".join(cmdline).lower()
+        if "hermes_cli" in cmd_str or "hermes_bootstrap" in cmd_str or ".hermes/hermes-agent" in cmd_str or ".hermes/tools/python" in raw_exe:
+            return "hermes"
+        if "opencode" in raw_exe.lower() or "opencode serve" in cmd_str:
+            return "opencode"
+
         if script_path:
             norm_script = script_path.lower()
             if "pi-coding-agent" in norm_script or ".pi/agent" in norm_script:

@@ -7,7 +7,7 @@ import os
 import time
 import psutil
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 
 from rich.console import Console
 from rich.table import Table
@@ -346,19 +346,82 @@ def build_external_table(
             )
         return table
 
+def get_fleet_sessions(
+    mgr: StateManager,
+    reg: HarnessRegistry,
+    show_all: bool = False
+) -> Tuple[List[FleetSession], List[Any], List[FleetSession]]:
+    """
+    Retrieve and merge managed and ambient sessions, deduplicating
+    and refreshing live process state across all supported harnesses.
+    Returns: (active_sessions, remaining_externals, combined_sessions)
+    """
+    all_sessions = mgr.list_all(refresh=True)
+    ambient_sessions = mgr.discover_ambient_sessions(reg)
+
+    session_map: Dict[str, FleetSession] = {}
+    for s in all_sessions:
+        s.update_status()
+        session_map[s.session_id] = s
+
+    for amb in ambient_sessions:
+        matched_key = None
+        for sid, s in session_map.items():
+            if sid == amb.session_id:
+                matched_key = sid
+                break
+            amb_nid = amb.metadata.get("native_session_id")
+            s_nid = s.metadata.get("native_session_id")
+            if amb_nid and s_nid and amb_nid == s_nid:
+                matched_key = sid
+                break
+
+        if matched_key:
+            existing = session_map[matched_key]
+            if amb.is_alive():
+                # Ambient session is actively running; promote/update existing session state
+                existing.status = "RUNNING"
+                existing.end_time = None
+                if amb.pid:
+                    existing.pid = amb.pid
+                if amb.model:
+                    existing.model = amb.model
+                if amb.task_name and (not existing.task_name or existing.task_name in ("Agent Task", "OpenCode Interactive")):
+                    existing.task_name = amb.task_name
+                if amb.worktree_path:
+                    existing.worktree_path = amb.worktree_path
+                existing.metadata.update(amb.metadata)
+                try:
+                    mgr.save(existing)
+                except Exception:
+                    pass
+        else:
+            session_map[amb.session_id] = amb
+
+    combined_sessions = list(session_map.values())
+    active_sessions = filter_and_deduplicate_sessions(combined_sessions, show_all=show_all)
+
+    externals = mgr.discover_external_harnesses(reg)
+    surfaced_pids = {s.pid for s in active_sessions if s.pid}
+    surfaced_harnesses = {s.harness for s in active_sessions}
+    remaining_externals = [
+        e for e in externals
+        if e.pid not in surfaced_pids and e.harness not in surfaced_harnesses
+    ]
+
+    return active_sessions, remaining_externals, combined_sessions
+
 def print_status_table(show_all: bool = False) -> None:
     """Print clean, non-redundant status table to terminal."""
     mgr = StateManager()
-    all_sessions = mgr.list_all(refresh=True)
     reg = HarnessRegistry()
     installed = [h.key for h in reg.list_installed()]
-    externals = mgr.discover_external_harnesses(reg)
 
-    active_sessions = filter_and_deduplicate_sessions(all_sessions, show_all=show_all)
+    active_sessions, remaining_externals, combined_sessions = get_fleet_sessions(mgr, reg, show_all=show_all)
 
     # Header summary line
-    active_count = len([s for s in all_sessions if s.status == "RUNNING" and s.is_alive()])
-    total_historical = len([s for s in all_sessions if s.status in ("COMPLETED", "STOPPED", "FAILED")])
+    active_count = len([s for s in combined_sessions if s.status == "RUNNING" and s.is_alive()])
+    total_historical = len([s for s in combined_sessions if s.status in ("COMPLETED", "STOPPED", "FAILED") and not s.is_alive()])
     status_tag = f"[bold green]{active_count} running[/bold green]" if active_count else "[dim yellow]0 running[/dim yellow]"
     console.print(
         f"[bold cyan]HMUX[/bold cyan] - Agent Harness Fleet Manager | "
@@ -387,11 +450,11 @@ def print_status_table(show_all: bool = False) -> None:
 
     console.print()
 
-    # Ambient / External Harnesses
-    if externals:
-        console.print(build_external_table(externals, reg=reg))
+    # Ambient / External Harnesses (any remaining external processes not represented above)
+    if remaining_externals:
+        console.print(build_external_table(remaining_externals, reg=reg))
     else:
-        console.print("[dim]🌐 Ambient Harnesses: None detected running in background OS processes.[/dim]")
+        console.print("[dim]🌐 Ambient Harnesses: All active processes integrated into fleet above.[/dim]")
 
 def get_recent_logs(session_id: str, max_lines: int = 15) -> str:
     mgr = StateManager()
@@ -413,17 +476,15 @@ def run_live_dashboard(refresh_interval: float = 1.5) -> None:
     with Live(console=console, screen=True, auto_refresh=False) as live:
         try:
             while True:
-                all_sessions = mgr.list_all(refresh=True)
-                active_sessions = filter_and_deduplicate_sessions(all_sessions, show_all=False)
-                externals = mgr.discover_external_harnesses(reg)
+                active_sessions, remaining_externals, _ = get_fleet_sessions(mgr, reg, show_all=False)
                 table = build_fleet_table(active_sessions, reg=reg)
-                ext_table = build_external_table(externals, reg=reg)
+                ext_table = build_external_table(remaining_externals, reg=reg) if remaining_externals else Panel("[dim]All active processes integrated into fleet above.[/dim]", title="Ambient Harnesses")
 
                 # Layout: Top is table, middle is external, bottom is log preview
                 layout = Layout()
                 layout.split_column(
                     Layout(name="header", size=3),
-                    Layout(name="tables", size=max(10, len(active_sessions) + len(externals) + 10)),
+                    Layout(name="tables", size=max(10, len(active_sessions) + len(remaining_externals) + 10)),
                     Layout(name="logs"),
                     Layout(name="footer", size=3)
                 )
