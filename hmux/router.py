@@ -228,6 +228,37 @@ class MessageRouter:
                 except Exception:
                     pass
 
+        if not target and to_session.startswith("local-"):
+            from hmux.hermes import HermesDriver
+            driver = HermesDriver()
+            db_path = driver.get_db_path()
+            if db_path.exists():
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(db_path)
+                    c = conn.cursor()
+                    c.execute("SELECT id, title, model, cwd FROM sessions WHERE id = ? LIMIT 1;", (to_session,))
+                    row = c.fetchone()
+                    conn.close()
+                    if row:
+                        model_name = row[2] or driver.get_session_model(row[0])
+                        if not model_name:
+                            from hmux.registry import HarnessRegistry
+                            model_name = HarnessRegistry().resolve_model("hermes")
+                        target = FleetSession(
+                            session_id=to_session,
+                            harness="hermes",
+                            task_name=row[1] or "Hermes Chat",
+                            prompt="",
+                            worktree_path=row[3] or os.getcwd(),
+                            status="COMPLETED",
+                            metadata={"native_session_id": row[0]},
+                            model=model_name
+                        )
+                        self.state_mgr.register(target)
+                except Exception:
+                    pass
+
         delivered_socket = False
         if target:
             if target.harness == "freebuff" and target.status == "RUNNING":
@@ -268,6 +299,27 @@ class MessageRouter:
                         data["messages"].append(record)
                         self._write_raw(data)
                         return False, f"Timeout waiting for reply from OpenCode session {to_session} ({timeout}s elapsed)"
+                else:
+                    delivered_socket = driver.send_prompt(target, message)
+                    if delivered_socket:
+                        record["status"] = "DELIVERED"
+            elif target.harness == "hermes":
+                from hmux.hermes import HermesDriver
+                driver = HermesDriver()
+                if wait:
+                    reply = driver.converse(target, message, timeout=timeout)
+                    if reply:
+                        record["status"] = "REPLIED"
+                        record["reply"] = reply
+                        record["reply_timestamp"] = datetime.now(timezone.utc).isoformat()
+                        data["messages"].append(record)
+                        self._write_raw(data)
+                        return True, reply
+                    else:
+                        record["status"] = "TIMEOUT"
+                        data["messages"].append(record)
+                        self._write_raw(data)
+                        return False, f"Timeout waiting for reply from Hermes session {to_session} ({timeout}s elapsed)"
                 else:
                     delivered_socket = driver.send_prompt(target, message)
                     if delivered_socket:

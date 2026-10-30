@@ -121,6 +121,19 @@ class Supervisor:
                 effective_extra.extend(["-s", native_id])
             elif harness.key == "codex":
                 effective_extra.extend(["resume", native_id])
+            elif harness.key == "hermes":
+                if not native_id.startswith("local-"):
+                    sess = self.state.get(resume_session)
+                    if sess and sess.metadata.get("native_session_id"):
+                        native_id = sess.metadata["native_session_id"]
+                    else:
+                        from hmux.hermes import HermesDriver
+                        driver = HermesDriver()
+                        if sess:
+                            resolved = driver.resolve_native_session_id(sess)
+                            if resolved:
+                                native_id = resolved
+                effective_extra.extend(["--resume", native_id])
             elif harness.key == "pi":
                 effective_extra.extend(["--session", native_id])
 
@@ -171,6 +184,16 @@ class Supervisor:
             if wait:
                 proc.wait()
                 session.status = "COMPLETED"
+                if harness.key == "hermes":
+                    from hmux.hermes import HermesDriver
+                    n_id = HermesDriver().resolve_native_session_id(session)
+                    if n_id:
+                        session.metadata["native_session_id"] = n_id
+                elif harness.key == "opencode":
+                    from hmux.opencode import OpenCodeDriver
+                    n_id = OpenCodeDriver().resolve_native_session_id(session)
+                    if n_id:
+                        session.metadata["native_session_id"] = n_id
                 self.state.update(session)
             return session
 

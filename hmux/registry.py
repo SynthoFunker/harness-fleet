@@ -203,6 +203,21 @@ class HarnessRegistry:
                         return m.group(1)
                 except Exception:
                     pass
+            # Check SQLite database for recent active model in sessions table
+            db_path = home / ".hermes" / "state.db"
+            if db_path.exists():
+                try:
+                    import sqlite3
+                    con = sqlite3.connect(str(db_path))
+                    cur = con.cursor()
+                    cur.execute("SELECT model FROM sessions WHERE model IS NOT NULL ORDER BY started_at DESC LIMIT 1;")
+                    row = cur.fetchone()
+                    con.close()
+                    if row and row[0]:
+                        return row[0]
+                except Exception:
+                    pass
+
             return os.environ.get("HERMES_MODEL") or "hermes-3-70b"
 
         # 5. OpenCode
@@ -434,12 +449,19 @@ class HarnessRegistry:
                     cmd.append(prompt)
 
         elif key == "hermes":
-            cmd = [harness.binary_path, "--in", worktree_dir]
-            if model:
-                cmd.extend(["--model", model])
-            if prompt:
-                cmd.extend(["-z", prompt])
-            cmd.extend(extra)
+            is_resuming = extra and "--resume" in extra
+            if headless and prompt:
+                cmd = [harness.binary_path, "chat", "-q", prompt, "-Q", "--oneshot", "--yolo", "--in", worktree_dir]
+                if model and not is_resuming:
+                    cmd.extend(["-m", model])
+                cmd.extend(extra)
+            else:
+                cmd = [harness.binary_path, "--in", worktree_dir]
+                if model and not is_resuming:
+                    cmd.extend(["--model", model])
+                if prompt:
+                    cmd.extend(["-z", prompt])
+                cmd.extend(extra)
 
         elif key == "pi":
             cmd = [harness.binary_path]
