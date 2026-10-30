@@ -7,6 +7,7 @@ import os
 import json
 import uuid
 import time
+import socket
 import psutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,7 +68,21 @@ class FleetSession:
                 pass
         try:
             p = psutil.Process(self.pid)
-            return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+            if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
+                return False
+            # Verify the process belongs to this session or harness to guard against OS PID recycling
+            cmd = " ".join(p.cmdline()).lower()
+            name = p.name().lower()
+            if self.metadata.get("ambient"):
+                from hmux.registry import HarnessRegistry
+                return bool(HarnessRegistry().match_process(name, p.cmdline()))
+            if self.session_id.lower() in cmd:
+                return True
+            from hmux.registry import HarnessRegistry
+            matched = HarnessRegistry().match_process(name, p.cmdline())
+            if matched == self.harness:
+                return True
+            return False
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return False
 
@@ -176,7 +191,31 @@ class StateManager:
         data["sessions"][session.session_id] = session.to_dict()
         self._write_raw(data)
 
+    def deduplicate(self) -> int:
+        """Prune redundant session entries from state (e.g. duplicate native session IDs)."""
+        data = self._read_raw()
+        sessions = data.get("sessions", {})
+        managed_native_ids = set()
+        for sid, sdata in sessions.items():
+            nid = sdata.get("metadata", {}).get("native_session_id")
+            if nid and not sid.startswith(("local-", "ses_")):
+                managed_native_ids.add(nid)
+
+        to_delete = []
+        for sid in sessions:
+            if sid.startswith(("local-", "ses_")) and sid in managed_native_ids:
+                to_delete.append(sid)
+
+        for sid in to_delete:
+            del sessions[sid]
+
+        if to_delete:
+            self._write_raw(data)
+        return len(to_delete)
+
     def list_all(self, refresh: bool = True) -> List[FleetSession]:
+        if refresh:
+            self.deduplicate()
         data = self._read_raw()
         sessions = [FleetSession.from_dict(d) for d in data["sessions"].values()]
         changed = False

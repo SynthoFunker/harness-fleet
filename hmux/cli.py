@@ -27,9 +27,10 @@ def cli():
     pass
 
 @cli.command("status")
-def status_cmd():
+@click.option("--all", "-a", "show_all", is_flag=True, default=False, help="Show all historical and completed sessions in addition to active ones")
+def status_cmd(show_all: bool):
     """Display active agent sessions, resource usage, and statuses."""
-    print_status_table()
+    print_status_table(show_all=show_all)
 
 @cli.command("top")
 @click.option("--interval", "-i", default=1.5, type=float, help="Refresh interval in seconds")

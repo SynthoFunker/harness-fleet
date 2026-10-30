@@ -43,8 +43,9 @@ class TestMessageRouter(unittest.TestCase):
         # Create dummy listening socket
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(sock_path)
-        srv.listen(1)
+        srv.listen(5)
         srv.setblocking(False)
+        srv.settimeout(2.0)
 
         mock_session = FleetSession(
             session_id=s_id,
@@ -68,10 +69,15 @@ class TestMessageRouter(unittest.TestCase):
             )
             self.assertTrue(ok)
 
-            # Verify listening socket received it
-            conn, _ = srv.accept()
-            received_bytes = conn.recv(4096)
-            conn.close()
+            # Verify listening socket received it. The liveness probe opens and
+            # closes one connection, so drain empty connections first.
+            received_bytes = b""
+            while b"Hello from Antigravity" not in received_bytes:
+                conn, _ = srv.accept()
+                chunk = conn.recv(4096)
+                conn.close()
+                if chunk:
+                    received_bytes += chunk
             self.assertIn(b"Hello from Antigravity", received_bytes)
             self.assertIn(b"caller-antigravity", received_bytes)
 

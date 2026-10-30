@@ -96,6 +96,8 @@ class MessageRouter:
         """List all sessions that can receive messages right now."""
         sessions = self.state_mgr.list_all(refresh=True)
         active = []
+        seen_ids = set()
+        seen_native_ids = set()
         for s in sessions:
             if s.status == "RUNNING" and (os.path.exists(s.socket_path) or s.metadata.get("ambient")):
                 active.append({
@@ -108,6 +110,32 @@ class MessageRouter:
                     "type": "socket" if os.path.exists(s.socket_path) else "mailbox",
                     "socket_path": s.socket_path
                 })
+                seen_ids.add(s.session_id)
+                native_id = s.metadata.get("native_session_id")
+                if native_id:
+                    seen_native_ids.add(native_id)
+
+        # OpenCode sessions are addressable through opencode.db even when they
+        # were not spawned by HMUX. Include the ones that are actively working.
+        try:
+            from hmux.opencode import OpenCodeDriver
+            for item in OpenCodeDriver().list_sessions(limit=25, live_only=True):
+                if item["session_id"] in seen_ids or item["session_id"] in seen_native_ids:
+                    continue
+                active.append({
+                    "session_id": item["session_id"],
+                    "harness": "opencode",
+                    "task_name": item["title"],
+                    "branch": "main",
+                    "status": "RUNNING",
+                    "model": item["model"],
+                    "type": "opencode-db",
+                    "socket_path": "",
+                })
+                seen_ids.add(item["session_id"])
+        except Exception:
+            pass
+
         return active
 
     def register_ambient(self, session_id: str, harness: str, task_name: str, pid: Optional[int] = None) -> FleetSession:
@@ -197,36 +225,36 @@ class MessageRouter:
 
         # Check target session
         target = self.state_mgr.get(to_session)
+        if not target and (to_session.startswith("ses_") or to_session.startswith("local-")):
+            # Check if an existing managed session already maps to this native session ID
+            for s in self.state_mgr.list_all(refresh=False):
+                if s.metadata.get("native_session_id") == to_session:
+                    target = s
+                    break
+
         if not target and to_session.startswith("ses_"):
             from hmux.opencode import OpenCodeDriver
             driver = OpenCodeDriver()
-            db_path = driver.get_db_path()
-            if db_path.exists():
-                try:
-                    import sqlite3
-                    conn = sqlite3.connect(db_path)
-                    c = conn.cursor()
-                    c.execute("SELECT id, title, model FROM session_v2 WHERE id = ? LIMIT 1;", (to_session,))
-                    row = c.fetchone()
-                    conn.close()
-                    if row:
-                        model_name = driver.get_session_model(row[0])
-                        if not model_name:
-                            from hmux.registry import HarnessRegistry
-                            model_name = HarnessRegistry().resolve_model("opencode")
-                        target = FleetSession(
-                            session_id=to_session,
-                            harness="opencode",
-                            task_name=row[1] or "OpenCode Chat",
-                            prompt="",
-                            worktree_path=os.getcwd(),
-                            status="COMPLETED",
-                            metadata={"native_session_id": row[0]},
-                            model=model_name
-                        )
-                        self.state_mgr.register(target)
-                except Exception:
-                    pass
+            info = driver.get_session_info(to_session)
+            if info:
+                model_name = info["model"]
+                if not model_name:
+                    from hmux.registry import HarnessRegistry
+                    model_name = HarnessRegistry().resolve_model("opencode")
+                target = FleetSession(
+                    session_id=to_session,
+                    harness="opencode",
+                    task_name=info["title"] or "OpenCode Chat",
+                    prompt="",
+                    worktree_path=info["directory"] or os.getcwd(),
+                    status="COMPLETED",
+                    metadata={
+                        "native_session_id": info["session_id"],
+                        "opencode_db": True,
+                    },
+                    model=model_name
+                )
+                self.state_mgr.register(target)
 
         if not target and to_session.startswith("local-"):
             from hmux.hermes import HermesDriver
@@ -282,7 +310,9 @@ class MessageRouter:
                     delivered_socket = driver.send_prompt(target, message)
                     if delivered_socket:
                         record["status"] = "DELIVERED"
-            elif target.harness == "opencode":
+            elif target.harness == "opencode" and not (
+                target.status == "RUNNING" and os.path.exists(target.socket_path)
+            ):
                 from hmux.opencode import OpenCodeDriver
                 driver = OpenCodeDriver()
                 if wait:
@@ -370,7 +400,30 @@ class MessageRouter:
 
         for s in active:
             if s["session_id"] != from_session:
-                if self._inject_socket(s["socket_path"], envelope):
+                if s.get("type") == "opencode-db":
+                    from hmux.opencode import OpenCodeDriver
+                    driver = OpenCodeDriver()
+                    target = self.state_mgr.get(s["session_id"])
+                    if not target:
+                        info = driver.get_session_info(s["session_id"])
+                        if not info:
+                            continue
+                        target = FleetSession(
+                            session_id=info["session_id"],
+                            harness="opencode",
+                            task_name=info["title"],
+                            prompt="",
+                            worktree_path=info["directory"] or os.getcwd(),
+                            status="COMPLETED",
+                            metadata={
+                                "native_session_id": info["session_id"],
+                                "opencode_db": True,
+                            },
+                            model=info["model"],
+                        )
+                    if driver.send_prompt(target, envelope):
+                        delivered.append(s["session_id"])
+                elif self._inject_socket(s["socket_path"], envelope):
                     delivered.append(s["session_id"])
 
         # Record in message log

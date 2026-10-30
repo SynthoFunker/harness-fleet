@@ -4,6 +4,7 @@ Exposes live inter-harness messaging tools to AI coding agents (Antigravity, Cod
 over standard JSON-RPC 2.0 stdio transport.
 """
 
+import os
 import sys
 import json
 import traceback
@@ -14,6 +15,53 @@ from hmux.catalog import SessionCatalog
 
 router = MessageRouter()
 catalog = SessionCatalog()
+
+
+def get_caller_session_id(params: Dict[str, Any]) -> str:
+    """OpenCode attaches the invoking session ID to every MCP call's metadata."""
+    meta = params.get("_meta") or {}
+    return (
+        meta.get("ai.opencode/sessionID")
+        or meta.get("ai.opencode/sessionId")
+        or ""
+    )
+
+
+def ensure_caller_session(caller_id: str) -> None:
+    """
+    Register the calling OpenCode session in the HMUX fleet so its identity is
+    visible to peers and loopback replies can be routed back into it.
+    """
+    if not caller_id or not caller_id.startswith("ses_"):
+        return
+    try:
+        if router.state_mgr.get(caller_id):
+            return
+        from hmux.opencode import OpenCodeDriver
+        info = OpenCodeDriver().get_session_info(caller_id)
+        if not info:
+            return
+        from hmux.state import FleetSession
+        session = FleetSession(
+            session_id=caller_id,
+            harness="opencode",
+            task_name=info["title"],
+            prompt="",
+            worktree_path=info["directory"] or os.getcwd(),
+            pid=os.getppid(),
+            status="RUNNING",
+            metadata={
+                "ambient": True,
+                "native_session_id": caller_id,
+                "mcp": True,
+            },
+            model=info["model"],
+        )
+        router.state_mgr.register(session)
+    except Exception:
+        # Registration is best effort; messaging must keep working without it.
+        pass
+
 
 TOOLS = [
     {
@@ -78,8 +126,8 @@ TOOLS = [
                 },
                 "from_session": {
                     "type": "string",
-                    "description": "Your session ID or harness name (e.g. 'antigravity').",
-                    "default": "antigravity"
+                    "description": "Your session ID or harness name (defaults to the calling OpenCode session).",
+                    "default": "opencode"
                 },
                 "wait_for_reply": {
                     "type": "boolean",
@@ -107,8 +155,8 @@ TOOLS = [
                 },
                 "from_session": {
                     "type": "string",
-                    "description": "Your session ID or harness name.",
-                    "default": "antigravity"
+                    "description": "Your session ID or harness name (defaults to the calling OpenCode session).",
+                    "default": "opencode"
                 }
             },
             "required": ["message"]
@@ -138,6 +186,9 @@ TOOLS = [
 def handle_call_tool(params: Dict[str, Any]) -> Dict[str, Any]:
     tool_name = params.get("name")
     args = params.get("arguments", {})
+    caller_id = get_caller_session_id(params)
+    ensure_caller_session(caller_id)
+    default_from = caller_id or "opencode"
 
     if tool_name == "list_active_harnesses":
         sessions = router.list_active_sessions()
@@ -163,7 +214,7 @@ def handle_call_tool(params: Dict[str, Any]) -> Dict[str, Any]:
     elif tool_name == "talk_to_harness":
         target = args.get("target_session")
         msg = args.get("message")
-        from_s = args.get("from_session", "antigravity")
+        from_s = args.get("from_session") or default_from
         wait = args.get("wait_for_reply", True)
         timeout = float(args.get("timeout_seconds", 60))
 
@@ -181,7 +232,7 @@ def handle_call_tool(params: Dict[str, Any]) -> Dict[str, Any]:
 
     elif tool_name == "broadcast_to_harnesses":
         msg = args.get("message")
-        from_s = args.get("from_session", "antigravity")
+        from_s = args.get("from_session") or default_from
         res = router.broadcast(message=msg, from_session=from_s)
         text = f"Broadcast delivered to {res['delivered_count']} active session(s): {', '.join(res['recipients'])}"
         return {"content": [{"type": "text", "text": text}]}

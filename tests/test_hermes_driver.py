@@ -231,6 +231,7 @@ class TestHermesDriver(unittest.TestCase):
             # Verify in inbox
             inbox = router.get_inbox(s_id)
             self.assertTrue(any(m["body"] == "Tell me about golden ratio" for m in inbox))
+        state_mgr.delete(s_id)
 
     def test_router_auto_registers_native_hermes_session(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -269,6 +270,7 @@ class TestHermesDriver(unittest.TestCase):
                 self.assertIsNotNone(registered)
                 self.assertEqual(registered.harness, "hermes")
                 self.assertEqual(registered.model, "reflection/beam-1.0-501b-a23b:free")
+            StateManager().delete("local-auto-reg-123")
 
 
 if __name__ == "__main__":
