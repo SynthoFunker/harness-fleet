@@ -453,8 +453,6 @@ def print_status_table(show_all: bool = False) -> None:
     # Ambient / External Harnesses (any remaining external processes not represented above)
     if remaining_externals:
         console.print(build_external_table(remaining_externals, reg=reg))
-    else:
-        console.print("[dim]🌐 Ambient Harnesses: All active processes integrated into fleet above.[/dim]")
 
 def get_recent_logs(session_id: str, max_lines: int = 15) -> str:
     mgr = StateManager()
@@ -478,28 +476,32 @@ def run_live_dashboard(refresh_interval: float = 1.5) -> None:
             while True:
                 active_sessions, remaining_externals, _ = get_fleet_sessions(mgr, reg, show_all=False)
                 table = build_fleet_table(active_sessions, reg=reg)
-                ext_table = build_external_table(remaining_externals, reg=reg) if remaining_externals else Panel("[dim]All active processes integrated into fleet above.[/dim]", title="Ambient Harnesses")
 
-                # Layout: Top is table, middle is external, bottom is log preview
+                # Layout: Top is table, middle is log preview, bottom is footer
                 layout = Layout()
+                table_size = max(8, len(active_sessions) + (len(remaining_externals) + 6 if remaining_externals else 0) + 4)
                 layout.split_column(
                     Layout(name="header", size=3),
-                    Layout(name="tables", size=max(10, len(active_sessions) + len(remaining_externals) + 10)),
+                    Layout(name="tables", size=table_size),
                     Layout(name="logs"),
                     Layout(name="footer", size=3)
-                )
-
-                layout["tables"].split_column(
-                    Layout(name="managed"),
-                    Layout(name="external")
                 )
 
                 layout["header"].update(Panel(
                     "[bold green]HMUX Dynamic Fleet Supervisor[/bold green] | Press [bold red]Ctrl+C[/bold red] to exit monitor",
                     style="blue"
                 ))
-                layout["tables"]["managed"].update(table)
-                layout["tables"]["external"].update(ext_table)
+
+                if remaining_externals:
+                    layout["tables"].split_column(
+                        Layout(name="managed"),
+                        Layout(name="external")
+                    )
+                    ext_table = build_external_table(remaining_externals, reg=reg)
+                    layout["tables"]["managed"].update(table)
+                    layout["tables"]["external"].update(ext_table)
+                else:
+                    layout["tables"].update(table)
 
                 # Log preview for most recent running session
                 active = next((s for s in active_sessions if s.status == "RUNNING"), None) or (active_sessions[0] if active_sessions else None)
