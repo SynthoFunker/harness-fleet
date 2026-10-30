@@ -180,6 +180,96 @@ TOOLS = [
             },
             "required": []
         }
+    },
+    {
+        "name": "get_fleet_status",
+        "description": "Retrieve complete structured status of all running and ambient harnesses in the fleet, including resource usage, uptime, models, and installed harnesses.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "show_all": {
+                    "type": "boolean",
+                    "description": "Include historical/completed sessions if true (default: false).",
+                    "default": False
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "spawn_harness",
+        "description": "Spawn a new AI agent harness session (e.g. codex, opencode, hermes, pi, freebuff) inside an isolated Git worktree.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "harness": {
+                    "type": "string",
+                    "description": "The harness to spawn (codex, opencode, hermes, pi, freebuff, antigravity)."
+                },
+                "task_name": {
+                    "type": "string",
+                    "description": "Short identifier/slug for the task and branch name."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Initial instructions or goal for the agent."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional specific AI model override."
+                },
+                "use_worktree": {
+                    "type": "boolean",
+                    "description": "Whether to isolate the agent in a dedicated Git worktree branch (default: true).",
+                    "default": True
+                }
+            },
+            "required": ["harness", "task_name", "prompt"]
+        }
+    },
+    {
+        "name": "handover_to_harness",
+        "description": "Transfer session state out-of-band via session-transmuter and spawn or continue with a target harness agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_session": {
+                    "type": "string",
+                    "description": "Source harness name or session ID to transmute state from."
+                },
+                "to_harness": {
+                    "type": "string",
+                    "description": "Target harness to spawn (codex, opencode, hermes, pi, freebuff)."
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Optional task name for the target worktree."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Optional additional directive for the target agent."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional AI model override for target harness."
+                }
+            },
+            "required": ["from_session", "to_harness"]
+        }
+    },
+    {
+        "name": "diff_session",
+        "description": "Inspect the Git diff of code modifications produced by an agent session in its isolated worktree.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session ID whose branch worktree diff to inspect."
+                }
+            },
+            "required": ["session_id"]
+        }
     }
 ]
 
@@ -244,11 +334,180 @@ def handle_call_tool(params: Dict[str, Any]) -> Dict[str, Any]:
         text = json.dumps(inbox, indent=2)
         return {"content": [{"type": "text", "text": text}]}
 
+    elif tool_name == "get_fleet_status":
+        show_all = bool(args.get("show_all", False))
+        from hmux.registry import HarnessRegistry
+        from hmux.dashboard import (
+            get_fleet_sessions,
+            format_uptime,
+            format_resource,
+            format_model_name,
+            extract_model_from_cmdline,
+        )
+
+        reg = HarnessRegistry()
+        active_sessions, remaining_externals, combined_sessions = get_fleet_sessions(
+            router.state_mgr, reg, show_all=show_all
+        )
+
+        session_list = []
+        for s in active_sessions:
+            session_list.append({
+                "session_id": s.session_id,
+                "harness": s.harness,
+                "model": s.model or reg.resolve_model(s.harness),
+                "task_name": s.task_name,
+                "worktree_path": s.worktree_path,
+                "branch": s.branch,
+                "pid": s.pid,
+                "status": s.status,
+                "is_alive": s.is_alive(),
+                "start_time": s.start_time,
+                "uptime": format_uptime(s.start_time),
+                "resource_usage": format_resource(s.pid) if (s.status == "RUNNING" and s.is_alive()) else "-",
+                "metadata": s.metadata,
+            })
+
+        externals_list = []
+        for e in remaining_externals:
+            externals_list.append({
+                "pid": e.pid,
+                "harness": e.harness,
+                "model": format_model_name(extract_model_from_cmdline(e.cmdline) or reg.resolve_model(e.harness)),
+                "cwd": e.cwd,
+                "cpu_percent": e.cpu_percent,
+                "memory_mb": e.memory_mb,
+                "cmdline": e.cmdline,
+            })
+
+        result = {
+            "active_count": len([s for s in combined_sessions if s.status == "RUNNING" and s.is_alive()]),
+            "installed_harnesses": [h.key for h in reg.list_installed()],
+            "sessions": session_list,
+            "external_processes": externals_list,
+        }
+        return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+
+    elif tool_name == "spawn_harness":
+        harness = args.get("harness")
+        task_name = args.get("task_name")
+        prompt = args.get("prompt")
+        model = args.get("model")
+        use_worktree = args.get("use_worktree", True)
+
+        if not harness or not task_name:
+            return {"content": [{"type": "text", "text": "Missing required arguments: 'harness' and 'task_name'."}], "isError": True}
+
+        from hmux.supervisor import Supervisor
+        sup = Supervisor()
+        session = sup.spawn(
+            harness_name=harness,
+            task_name=task_name,
+            prompt=prompt,
+            model=model,
+            use_worktree=use_worktree,
+        )
+        res_data = {
+            "session_id": session.session_id,
+            "harness": session.harness,
+            "task_name": session.task_name,
+            "branch": session.branch,
+            "worktree_path": session.worktree_path,
+            "log_file": session.log_file,
+            "status": session.status,
+            "model": session.model,
+        }
+        return {"content": [{"type": "text", "text": json.dumps(res_data, indent=2)}]}
+
+    elif tool_name == "handover_to_harness":
+        from_session = args.get("from_session")
+        to_harness = args.get("to_harness")
+        task = args.get("task")
+        prompt = args.get("prompt", "")
+        model = args.get("model")
+
+        if not from_session or not to_harness:
+            return {"content": [{"type": "text", "text": "Missing required arguments: 'from_session' and 'to_harness'."}], "isError": True}
+
+        from hmux.supervisor import Supervisor
+        sup = Supervisor()
+
+        existing = sup.state.get(from_session)
+        if existing:
+            source_harness = existing.harness
+            source_session_id = existing.session_id
+        else:
+            h_info = sup.registry.get(from_session)
+            if h_info:
+                source_harness = h_info.key
+                source_session_id = None
+            else:
+                source_session_id = from_session
+                source_harness = from_session
+
+        session = sup.spawn(
+            harness_name=to_harness,
+            task_name=task or f"handover-{to_harness}",
+            prompt=prompt,
+            from_harness=source_harness,
+            from_session=source_session_id,
+            use_worktree=True,
+            model=model,
+        )
+        res_data = {
+            "session_id": session.session_id,
+            "harness": session.harness,
+            "from_harness": source_harness,
+            "from_session": source_session_id,
+            "task_name": session.task_name,
+            "branch": session.branch,
+            "worktree_path": session.worktree_path,
+            "status": session.status,
+            "model": session.model,
+        }
+        return {"content": [{"type": "text", "text": json.dumps(res_data, indent=2)}]}
+
+    elif tool_name == "diff_session":
+        session_id = args.get("session_id")
+        if not session_id:
+            return {"content": [{"type": "text", "text": "Missing required argument: 'session_id'."}], "isError": True}
+
+        session = router.state_mgr.get(session_id)
+        if not session:
+            return {"content": [{"type": "text", "text": f"Session '{session_id}' not found."}], "isError": True}
+
+        if not session.branch:
+            return {"content": [{"type": "text", "text": f"Session '{session_id}' did not use an isolated git branch."}]}
+
+        from hmux.worktree import WorktreeManager
+        wt_mgr = WorktreeManager(session.worktree_path or os.getcwd())
+        diff_text = wt_mgr.get_diff(session.branch)
+        if not diff_text.strip():
+            diff_text = f"No changes made yet on branch {session.branch}."
+        return {"content": [{"type": "text", "text": diff_text}]}
+
     else:
         return {
             "content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}],
             "isError": True
         }
+
+
+def export_antigravity_schemas(target_dir: str) -> List[str]:
+    """Export tool schemas in Antigravity lazy tool JSON format to target directory."""
+    os.makedirs(target_dir, exist_ok=True)
+    exported = []
+    for tool in TOOLS:
+        schema = {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool.get("inputSchema", {})
+        }
+        path = os.path.join(target_dir, f"{tool['name']}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(schema, f, indent=2)
+        exported.append(path)
+    return exported
 
 
 def run_mcp_server():

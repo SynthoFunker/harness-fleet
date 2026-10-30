@@ -559,8 +559,14 @@ def inbox_cmd(session: str, limit: int):
     console.print(table)
 
 @cli.command("mcp")
-def mcp_cmd():
+@click.option("--export-schemas", default=None, help="Export tool schemas to target directory (e.g. ~/.gemini/antigravity-cli/mcp/hmux)")
+def mcp_cmd(export_schemas: str = None):
     """Run the HMUX Model Context Protocol (MCP) server over stdio."""
+    if export_schemas:
+        from hmux.mcp_server import export_antigravity_schemas
+        out = export_antigravity_schemas(os.path.expanduser(export_schemas))
+        console.print(f"[bold green]✔ Exported {len(out)} tool schema(s) to {export_schemas}[/bold green]")
+        return
     from hmux.mcp_server import run_mcp_server
     run_mcp_server()
 
