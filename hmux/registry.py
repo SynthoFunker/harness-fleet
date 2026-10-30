@@ -446,19 +446,12 @@ class HarnessRegistry:
                 cmd.append(prompt)
 
         elif key == "freebuff":
-            if headless:
-                headless_bin = shutil.which("freebuff-headless") or os.path.join(_HOME, ".local/bin/freebuff-headless")
-                cmd = [headless_bin, "-C", worktree_dir]
-                if model:
-                    cmd.extend(["-m", model])
-                cmd.extend(extra)
-                if prompt:
-                    cmd.append(prompt)
-            else:
-                cmd = [harness.binary_path, "--cwd", worktree_dir]
-                if model:
-                    env["FREEBUFF_MODEL"] = model
-                cmd.extend(extra)
+            # Freebuff official binary is a TUI that must run legitimately in a PTY
+            # to comply with Freebuff's anti-proxy terms and render its native ad loop.
+            cmd = [harness.binary_path, "--cwd", worktree_dir]
+            if model:
+                env["FREEBUFF_MODEL"] = model
+            cmd.extend(extra)
 
         elif key == "antigravity":
             cmd = [harness.binary_path, "--add-dir", worktree_dir]

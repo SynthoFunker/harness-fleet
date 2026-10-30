@@ -104,8 +104,9 @@ class Supervisor:
             model=effective_model
         )
 
-        # Pure Zero-PTY headless invocation: execute directly as background process without allocating a PTY
-        if headless:
+        # Pure Zero-PTY headless invocation: for harnesses with native CLI non-interactive modes (e.g. codex exec)
+        # Note: TUI harnesses like Freebuff require PTY execution of their official binary to comply with client/ad terms
+        if headless and harness.key != "freebuff":
             with open(session.log_file, "a", encoding="utf-8") as log_out, \
                  open(session.log_file + ".err", "a", encoding="utf-8") as log_err:
                 proc = subprocess.Popen(
@@ -167,11 +168,23 @@ class Supervisor:
         if harness.key == "freebuff" and effective_prompt:
             from hmux.freebuff import FreebuffDriver
             driver = FreebuffDriver()
-            import threading
-            def _bg_inject():
-                if driver.wait_until_ready(session, timeout=25.0):
-                    driver.send_prompt(session, effective_prompt)
-            threading.Thread(target=_bg_inject, daemon=True).start()
+            if headless:
+                import threading
+                def _bg_headless_converse():
+                    if driver.wait_until_ready(session, timeout=25.0):
+                        resp = driver.converse(session, effective_prompt, timeout=120.0)
+                        if resp:
+                            with open(session.log_file, "a", encoding="utf-8") as f:
+                                f.write(f"\n[hmux-freebuff-response]\n{resp}\n")
+                        session.status = "COMPLETED"
+                        self.state.update(session)
+                threading.Thread(target=_bg_headless_converse, daemon=True).start()
+            else:
+                import threading
+                def _bg_inject():
+                    if driver.wait_until_ready(session, timeout=25.0):
+                        driver.send_prompt(session, effective_prompt)
+                threading.Thread(target=_bg_inject, daemon=True).start()
 
         return session
 
