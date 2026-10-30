@@ -71,6 +71,15 @@ class TestHMUX(unittest.TestCase):
         self.assertIn("hermes-3-70b", cmd)
         self.assertIn("-z", cmd)
 
+        # Freebuff command building: must NOT include positional prompt or --model in CLI args
+        if "freebuff" not in reg._installed:
+            reg._installed["freebuff"] = HarnessInfo("freebuff", "freebuff", "/usr/local/bin/freebuff", "Mock Freebuff")
+        cmd, env = reg.build_command("freebuff", "/tmp", prompt="Hello Freebuff", model="MiMo v2.6 Flash Fast")
+        self.assertEqual(cmd, ["/usr/local/bin/freebuff", "--cwd", "/tmp"])
+        self.assertNotIn("Hello Freebuff", cmd)
+        self.assertNotIn("--model", cmd)
+        self.assertEqual(env.get("FREEBUFF_MODEL"), "MiMo v2.6 Flash Fast")
+
     def test_state_manager(self):
         mgr = StateManager()
         s_id = mgr.generate_id("test")
@@ -218,6 +227,36 @@ class TestHMUX(unittest.TestCase):
             self.assertEqual(len(externals), 1)
             self.assertEqual(externals[0].harness, "pi")
             self.assertEqual(externals[0].pid, 99992)
+
+    def test_freebuff_driver_parsing(self):
+        import tempfile
+        import json
+        from hmux.freebuff import FreebuffDriver, clean_ansi
+
+        driver = FreebuffDriver()
+        raw_text = "\x1b[32m▍Enter a coding task\x1b[0m or / for commands\x1b]0;Title\x07"
+        self.assertEqual(clean_ansi(raw_text), "▍Enter a coding task or / for commands")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            msgs_path = tmp_path / "chat-messages.json"
+            sample_msgs = [
+                {"variant": "user", "content": "Hello Freebuff"},
+                {
+                    "variant": "ai",
+                    "isComplete": True,
+                    "blocks": [
+                        {"type": "text", "textType": "reasoning", "content": "Internal thought block"},
+                        {"type": "text", "textType": "text", "content": "I am Freebuff, ready to code!"}
+                    ]
+                }
+            ]
+            msgs_path.write_text(json.dumps(sample_msgs))
+            resp = driver.extract_latest_response(tmp_path, min_msg_index=0)
+            self.assertEqual(resp, "I am Freebuff, ready to code!")
+
+            # Verify message counting
+            self.assertEqual(driver.get_message_count(tmp_path), 2)
 
 if __name__ == "__main__":
     unittest.main()

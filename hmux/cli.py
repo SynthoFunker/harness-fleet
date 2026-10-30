@@ -307,6 +307,49 @@ def talk_cmd(session_id: str, message: str, from_session: str, wait: bool, timeo
         console.print(f"[bold red]✖ {res}[/bold red]")
         sys.exit(1)
 
+@cli.command("chat")
+@click.argument("session_id")
+@click.option("--from-session", "--from", "-f", "from_session", default="ambient", help="Sender session ID or harness name")
+@click.option("--timeout", "-t", default=90.0, type=float, help="Seconds to wait per turn")
+def chat_cmd(session_id: str, from_session: str, timeout: float):
+    """Start an interactive multi-turn conversation with an active session without TUI attachment."""
+    sup = Supervisor()
+    session = sup.state.get(session_id)
+    if not session or session.status != "RUNNING":
+        console.print(f"[bold red]Session '{session_id}' is not active or running.[/bold red]")
+        sys.exit(1)
+
+    router = MessageRouter()
+    console.print(f"[bold green]💬 Starting conversation with {session.harness} ({session_id})[/bold green]")
+    console.print(f"[dim]Type your message and press Enter. Type 'exit' or '/exit' to quit.[/dim]\n")
+
+    while True:
+        try:
+            user_input = console.input("[bold cyan]You > [/bold cyan]").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in ("exit", "/exit", "quit", "/quit"):
+                console.print("[dim]Conversation ended.[/dim]")
+                break
+
+            console.print(f"[dim]Waiting for {session.harness} to respond...[/dim]")
+            success, res = router.send(
+                to_session=session_id,
+                message=user_input,
+                from_session=from_session,
+                wait=True,
+                timeout=timeout
+            )
+            if success:
+                console.print(f"\n[bold green]=== {session.harness} ===[/bold green]")
+                console.print(res)
+                console.print()
+            else:
+                console.print(f"[bold red]✖ {res}[/bold red]\n")
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Conversation aborted.[/dim]")
+            break
+
 @cli.command("broadcast")
 @click.argument("message")
 @click.option("--from-session", "--from", "-f", "from_session", default="ambient", help="Sender session ID or harness name")

@@ -443,10 +443,8 @@ class HarnessRegistry:
         elif key == "freebuff":
             cmd = [harness.binary_path, "--cwd", worktree_dir]
             if model:
-                cmd.extend(["--model", model])
+                env["FREEBUFF_MODEL"] = model
             cmd.extend(extra)
-            if prompt:
-                cmd.append(prompt)
 
         elif key == "antigravity":
             cmd = [harness.binary_path, "--add-dir", worktree_dir]

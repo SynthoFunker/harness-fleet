@@ -199,12 +199,34 @@ class MessageRouter:
         target = self.state_mgr.get(to_session)
         delivered_socket = False
         if target and target.status == "RUNNING":
-            delivered_socket = self._inject_socket(
-                target.socket_path,
-                format_envelope(from_session, message)
-            )
-            if delivered_socket:
-                record["status"] = "DELIVERED"
+            if target.harness == "freebuff":
+                from hmux.freebuff import FreebuffDriver
+                driver = FreebuffDriver()
+                if wait:
+                    reply = driver.converse(target, message, timeout=timeout)
+                    if reply:
+                        record["status"] = "REPLIED"
+                        record["reply"] = reply
+                        record["reply_timestamp"] = datetime.now(timezone.utc).isoformat()
+                        data["messages"].append(record)
+                        self._write_raw(data)
+                        return True, reply
+                    else:
+                        record["status"] = "TIMEOUT"
+                        data["messages"].append(record)
+                        self._write_raw(data)
+                        return False, f"Timeout waiting for reply from Freebuff session {to_session} ({timeout}s elapsed)"
+                else:
+                    delivered_socket = driver.send_prompt(target, message)
+                    if delivered_socket:
+                        record["status"] = "DELIVERED"
+            else:
+                delivered_socket = self._inject_socket(
+                    target.socket_path,
+                    format_envelope(from_session, message)
+                )
+                if delivered_socket:
+                    record["status"] = "DELIVERED"
 
         data["messages"].append(record)
         # Keep last 500 messages to prevent unbounded growth

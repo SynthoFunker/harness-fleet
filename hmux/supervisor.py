@@ -75,6 +75,10 @@ class Supervisor:
                     worktree_path, branch_name = wt_mgr.create_worktree(effective_task)
                 except Exception as e:
                     print(f"Warning: Failed to create git worktree ({e}), using current directory.")
+            elif harness.key == "freebuff" and worktree_path == str(Path.home()):
+                default_fb_dir = os.path.join(str(Path.home()), "Projects", "freebuff")
+                if os.path.exists(default_fb_dir):
+                    worktree_path = default_fb_dir
 
         # Resolve actual model name for tracking
         effective_model = self.registry.resolve_model(harness.key, model)
@@ -138,6 +142,26 @@ class Supervisor:
 
         session.pid = child_pid
         self.state.register(session)
+
+        # Automated prompt injection for TUI harnesses that lack native CLI prompt flags
+        if harness.key == "freebuff" and effective_prompt:
+            from hmux.freebuff import FreebuffDriver
+            driver = FreebuffDriver()
+            if headless:
+                if driver.wait_until_ready(session, timeout=25.0):
+                    resp = driver.converse(session, effective_prompt, timeout=90.0)
+                    if resp:
+                        with open(session.log_file, "a", encoding="utf-8") as f:
+                            f.write(f"\n[hmux-freebuff-response]\n{resp}\n")
+                    session.status = "COMPLETED"
+                    self.state.update(session)
+            else:
+                import threading
+                def _bg_inject():
+                    if driver.wait_until_ready(session, timeout=25.0):
+                        driver.send_prompt(session, effective_prompt)
+                threading.Thread(target=_bg_inject, daemon=True).start()
+
         return session
 
     def attach(self, session_id: str) -> None:
