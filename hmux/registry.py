@@ -268,7 +268,7 @@ class HarnessRegistry:
                             return data["model"]
                     except Exception:
                         pass
-            return os.environ.get("FREEBUFF_MODEL") or "standard"
+            return os.environ.get("FREEBUFF_MODEL") or "MiMo v2.6 Flash Fast"
 
         return "standard"
 
