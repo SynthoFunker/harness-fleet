@@ -197,9 +197,42 @@ class MessageRouter:
 
         # Check target session
         target = self.state_mgr.get(to_session)
+        if not target and to_session.startswith("ses_"):
+            from hmux.opencode import OpenCodeDriver
+            driver = OpenCodeDriver()
+            db_path = driver.get_db_path()
+            if db_path.exists():
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(db_path)
+                    c = conn.cursor()
+                    c.execute("SELECT id, title, model FROM session_v2 WHERE id = ? LIMIT 1;", (to_session,))
+                    row = c.fetchone()
+                    conn.close()
+                    if row:
+                        model_name = "opencode/deepseek-v4.1-flash-free"
+                        if row[2] and "{" in row[2]:
+                            try:
+                                model_name = json.loads(row[2]).get("id", model_name)
+                            except Exception:
+                                pass
+                        target = FleetSession(
+                            session_id=to_session,
+                            harness="opencode",
+                            task_name=row[1] or "OpenCode Chat",
+                            prompt="",
+                            worktree_path=os.getcwd(),
+                            status="COMPLETED",
+                            metadata={"native_session_id": row[0]},
+                            model=model_name
+                        )
+                        self.state_mgr.register(target)
+                except Exception:
+                    pass
+
         delivered_socket = False
-        if target and target.status == "RUNNING":
-            if target.harness == "freebuff":
+        if target:
+            if target.harness == "freebuff" and target.status == "RUNNING":
                 from hmux.freebuff import FreebuffDriver
                 driver = FreebuffDriver()
                 if wait:
@@ -220,7 +253,28 @@ class MessageRouter:
                     delivered_socket = driver.send_prompt(target, message)
                     if delivered_socket:
                         record["status"] = "DELIVERED"
-            else:
+            elif target.harness == "opencode":
+                from hmux.opencode import OpenCodeDriver
+                driver = OpenCodeDriver()
+                if wait:
+                    reply = driver.converse(target, message, timeout=timeout)
+                    if reply:
+                        record["status"] = "REPLIED"
+                        record["reply"] = reply
+                        record["reply_timestamp"] = datetime.now(timezone.utc).isoformat()
+                        data["messages"].append(record)
+                        self._write_raw(data)
+                        return True, reply
+                    else:
+                        record["status"] = "TIMEOUT"
+                        data["messages"].append(record)
+                        self._write_raw(data)
+                        return False, f"Timeout waiting for reply from OpenCode session {to_session} ({timeout}s elapsed)"
+                else:
+                    delivered_socket = driver.send_prompt(target, message)
+                    if delivered_socket:
+                        record["status"] = "DELIVERED"
+            elif target.status == "RUNNING":
                 delivered_socket = self._inject_socket(
                     target.socket_path,
                     format_envelope(from_session, message)
@@ -234,7 +288,7 @@ class MessageRouter:
             data["messages"] = data["messages"][-500:]
         self._write_raw(data)
 
-        if not delivered_socket and (not target or target.status != "RUNNING"):
+        if not delivered_socket and record.get("status") != "DELIVERED" and (not target or target.status != "RUNNING"):
             if target and target.metadata.get("ambient"):
                 record["status"] = "DELIVERED"
                 self._write_raw(data)
